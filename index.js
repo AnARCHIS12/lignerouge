@@ -25,9 +25,6 @@ const client = new Client({
     ]
 });
 
-// Base de données SQLite
-const db = new sqlite3.Database('./bot.db');
-
 // Configuration par défaut
 const CONFIG = {
     XP_PAR_MESSAGE: 1,
@@ -46,63 +43,99 @@ const messageCooldowns = new Map();
 // Cache pour les actions en attente
 const pendingActions = new Map();
 
+// Initialiser la base de données SQLite
+const db = new sqlite3.Database('bot.db', (err) => {
+    if (err) {
+        console.error('Erreur lors de la connexion à la base de données:', err);
+        return;
+    }
+    console.log('Connecté à la base de données SQLite');
+    
+    // Initialiser les tables une seule fois à la connexion
+    initDatabase();
+});
+
+// Fonction d'initialisation de la base de données
+function initDatabase() {
+    db.get("SELECT name FROM sqlite_master WHERE type='table' AND name='guild_config'", (err, row) => {
+        if (err) {
+            console.error('Erreur lors de la vérification des tables:', err);
+            return;
+        }
+
+        // Si les tables n'existent pas, on les crée
+        if (!row) {
+            console.log('Création des tables...');
+            db.serialize(() => {
+                // Table pour les points de mérite
+                db.run(`CREATE TABLE IF NOT EXISTS mod_xp (
+                    user_id TEXT,
+                    guild_id TEXT,
+                    xp INTEGER DEFAULT 0,
+                    weekly_xp INTEGER DEFAULT 0,
+                    PRIMARY KEY (user_id, guild_id)
+                )`, err => {
+                    if (err) {
+                        console.error('Erreur lors de la création de la table mod_xp:', err);
+                    } else {
+                        console.log('Table mod_xp créée avec succès');
+                    }
+                });
+
+                // Table pour les actions de modération
+                db.run(`CREATE TABLE IF NOT EXISTS mod_actions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT,
+                    guild_id TEXT,
+                    action_type TEXT,
+                    xp_gained INTEGER,
+                    week_number INTEGER,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                )`, err => {
+                    if (err) {
+                        console.error('Erreur lors de la création de la table mod_actions:', err);
+                    } else {
+                        console.log('Table mod_actions créée avec succès');
+                    }
+                });
+
+                // Table de configuration
+                db.run(`CREATE TABLE IF NOT EXISTS guild_config (
+                    guild_id TEXT PRIMARY KEY,
+                    mod_role_id TEXT,
+                    leaderboard_channel_id TEXT,
+                    welcome_channel_id TEXT,
+                    welcome_title TEXT,
+                    welcome_content TEXT,
+                    welcome_image TEXT
+                )`, err => {
+                    if (err) {
+                        console.error('Erreur lors de la création de la table guild_config:', err);
+                    } else {
+                        console.log('Table guild_config créée avec succès');
+                    }
+                });
+            });
+        } else {
+            console.log('Les tables existent déjà');
+        }
+    });
+}
+
+// Quand le bot est prêt
 client.once('ready', async () => {
     console.log(`${client.user.tag} est prêt !`);
     
-    // Créer les tables
-    db.serialize(() => {
-        // Table pour les points de mérite
-        db.run(`CREATE TABLE IF NOT EXISTS mod_xp (
-            user_id TEXT,
-            guild_id TEXT,
-            xp INTEGER DEFAULT 0,
-            weekly_xp INTEGER DEFAULT 0,
-            PRIMARY KEY (user_id, guild_id)
-        )`);
-
-        // Table pour les actions de modération
-        db.run(`CREATE TABLE IF NOT EXISTS mod_actions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT,
-            guild_id TEXT,
-            action_type TEXT,
-            xp_gained INTEGER,
-            week_number INTEGER,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-        )`);
-
-        // Table de configuration avec colonnes pour le message de bienvenue
-        db.run(`CREATE TABLE IF NOT EXISTS guild_config (
-            guild_id TEXT PRIMARY KEY,
-            mod_role_id TEXT,
-            leaderboard_channel_id TEXT,
-            welcome_channel_id TEXT,
-            welcome_title TEXT,
-            welcome_content TEXT,
-            welcome_image TEXT
-        )`);
-
-        // Ajouter les colonnes manquantes si elles n'existent pas
-        db.run(`ALTER TABLE guild_config ADD COLUMN welcome_channel_id TEXT DEFAULT NULL`, err => {
-            if (err && !err.message.includes('duplicate column')) {
-                console.error('Erreur lors de l\'ajout de welcome_channel_id:', err);
-            }
-        });
-    });
-
     try {
         // Enregistrer/mettre à jour la commande dashboard
         await client.application.commands.create({
             name: 'dashboard',
             description: '☭ Bureau Politique du Parti ☭'
         });
-        console.log('✅ Bureau Politique initialisé');
+        console.log('Commande dashboard enregistrée');
     } catch (error) {
-        console.error('❌ Erreur lors de l\'initialisation du Bureau Politique:', error);
+        console.error('Erreur lors de l\'enregistrement de la commande:', error);
     }
-
-    // Planifier la tâche hebdomadaire
-    cron.schedule('0 0 * * 0', () => weeklyReset());
 });
 
 // Fonction pour obtenir le numéro de la semaine
@@ -379,6 +412,347 @@ client.on('interactionCreate', async interaction => {
         );
     }
 
+    // Retour au menu principal
+    else if (interaction.customId === 'return_dashboard') {
+        try {
+            const mainEmbed = new EmbedBuilder()
+                .setTitle('☭ Bureau Politique du Parti ☭')
+                .setDescription(
+                    'Bienvenue au Bureau Politique, Camarade.\n\n' +
+                    'Sélectionnez votre département :\n\n' +
+                    '🛡️ **Justice du Parti** - Gestion de la modération\n' +
+                    '📊 **Médailles du Mérite** - Statistiques et XP\n' +
+                    '⚙️ **Directives du Parti** - Configuration'
+                )
+                .setColor('#CC0000')
+                .setFooter({ text: 'Le Parti guide nos actions !' });
+
+            const row = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('menu_mod')
+                        .setLabel('Justice du Parti')
+                        .setStyle(ButtonStyle.Danger)
+                        .setEmoji('🛡️'),
+                    new ButtonBuilder()
+                        .setCustomId('menu_stats')
+                        .setLabel('Médailles du Mérite')
+                        .setStyle(ButtonStyle.Primary)
+                        .setEmoji('📊'),
+                    new ButtonBuilder()
+                        .setCustomId('menu_config')
+                        .setLabel('Directives du Parti')
+                        .setStyle(ButtonStyle.Secondary)
+                        .setEmoji('⚙️')
+                );
+
+            try {
+                await interaction.update({
+                    embeds: [mainEmbed],
+                    components: [row]
+                });
+            } catch (error) {
+                if (error.code === 10062) { // Unknown Interaction
+                    // Si l'interaction est expirée, on crée une nouvelle réponse
+                    await interaction.reply({
+                        embeds: [mainEmbed],
+                        components: [row],
+                        ephemeral: true
+                    });
+                } else {
+                    throw error;
+                }
+            }
+        } catch (error) {
+            console.error('Erreur lors du retour au menu principal:', error);
+            try {
+                await interaction.reply({
+                    content: 'Une erreur s\'est produite lors du retour au menu principal. Utilisez `/dashboard` pour recommencer.',
+                    ephemeral: true
+                });
+            } catch (replyError) {
+                console.error('Erreur lors de la réponse d\'erreur:', replyError);
+            }
+        }
+    }
+
+    // Menu configuration
+    else if (interaction.customId === 'menu_config') {
+        try {
+            db.get(
+                'SELECT mod_role_id, leaderboard_channel_id, welcome_channel_id FROM guild_config WHERE guild_id = ?',
+                [interaction.guildId],
+                async (err, row) => {
+                    if (err) {
+                        console.error('Erreur SQL:', err);
+                        return;
+                    }
+
+                    const currentModRole = row?.mod_role_id ? `<@&${row.mod_role_id}>` : 'Non assigné';
+                    const currentChannel = row?.leaderboard_channel_id ? `<#${row.leaderboard_channel_id}>` : 'Non assigné';
+                    const welcomeChannel = row?.welcome_channel_id ? `<#${row.welcome_channel_id}>` : 'Non assigné';
+
+                    const row1 = new ActionRowBuilder()
+                        .addComponents(
+                            new ButtonBuilder()
+                                .setCustomId('config_mod_role')
+                                .setLabel('Garde Rouge')
+                                .setStyle(ButtonStyle.Danger)
+                                .setEmoji('👮'),
+                            new ButtonBuilder()
+                                .setCustomId('config_leaderboard')
+                                .setLabel('Canal de Propagande')
+                                .setStyle(ButtonStyle.Primary)
+                                .setEmoji('📢'),
+                            new ButtonBuilder()
+                                .setCustomId('config_welcome_channel')
+                                .setLabel('Canal d\'Accueil')
+                                .setStyle(ButtonStyle.Primary)
+                                .setEmoji('🚩'),
+                            new ButtonBuilder()
+                                .setCustomId('welcome_config')
+                                .setLabel('Message d\'Accueil')
+                                .setStyle(ButtonStyle.Primary)
+                                .setEmoji('📨')
+                        );
+
+                    const row2 = new ActionRowBuilder()
+                        .addComponents(
+                            new ButtonBuilder()
+                                .setCustomId('return_dashboard')
+                                .setLabel('Retour')
+                                .setStyle(ButtonStyle.Secondary)
+                                .setEmoji('↩️')
+                        );
+
+                    const embed = new EmbedBuilder()
+                        .setTitle('⚙️ Directives du Parti ⚙️')
+                        .setDescription(
+                            'Configuration actuelle :\n\n' +
+                            `👮 **Garde Rouge** - ${currentModRole}\n` +
+                            `📢 **Canal de Propagande** - ${currentChannel}\n` +
+                            `🚩 **Canal d'Accueil** - ${welcomeChannel}\n` +
+                            '📨 **Message d\'Accueil** - Message de bienvenue révolutionnaire'
+                        )
+                        .setColor('#CC0000')
+                        .setFooter({ text: 'Le Parti guide nos actions !' });
+
+                    try {
+                        await interaction.update({ 
+                            embeds: [embed], 
+                            components: [row1, row2] 
+                        });
+                    } catch (error) {
+                        if (error.code === 10062) {
+                            await interaction.reply({
+                                embeds: [embed],
+                                components: [row1, row2],
+                                ephemeral: true
+                            });
+                        } else {
+                            throw error;
+                        }
+                    }
+                }
+            );
+        } catch (error) {
+            console.error('Erreur lors de l\'affichage du menu de configuration:', error);
+            try {
+                await interaction.reply({
+                    content: 'Une erreur s\'est produite. Utilisez `/dashboard` pour recommencer.',
+                    ephemeral: true
+                });
+            } catch (replyError) {
+                console.error('Erreur lors de la réponse d\'erreur:', replyError);
+            }
+        }
+    }
+
+    // Sélection du rôle de modérateur
+    else if (interaction.customId === 'select_mod_role') {
+        const roleId = interaction.values[0];
+        
+        // Récupérer la configuration existante
+        db.get('SELECT * FROM guild_config WHERE guild_id = ?', [interaction.guildId], (err, row) => {
+            if (err) {
+                console.error('Erreur lors de la vérification de la configuration:', err);
+                return;
+            }
+
+            let query;
+            let params;
+
+            if (row) {
+                // Mise à jour en préservant les autres valeurs
+                query = `UPDATE guild_config SET 
+                    mod_role_id = ?,
+                    leaderboard_channel_id = COALESCE(leaderboard_channel_id, ?),
+                    welcome_channel_id = COALESCE(welcome_channel_id, ?),
+                    welcome_title = COALESCE(welcome_title, ?),
+                    welcome_content = COALESCE(welcome_content, ?),
+                    welcome_image = COALESCE(welcome_image, ?)
+                    WHERE guild_id = ?`;
+                params = [
+                    roleId,
+                    row.leaderboard_channel_id,
+                    row.welcome_channel_id,
+                    row.welcome_title,
+                    row.welcome_content,
+                    row.welcome_image,
+                    interaction.guildId
+                ];
+            } else {
+                // Première insertion
+                query = `INSERT INTO guild_config (
+                    guild_id, 
+                    mod_role_id
+                ) VALUES (?, ?)`;
+                params = [interaction.guildId, roleId];
+            }
+
+            db.run(query, params, async function(err) {
+                if (err) {
+                    console.error('Erreur SQL lors de la sauvegarde du rôle:', err);
+                    await interaction.reply({
+                        content: '❌ Une erreur s\'est produite lors de la configuration du rôle !',
+                        ephemeral: true
+                    });
+                    return;
+                }
+
+                console.log(`Configuration sauvegardée - Guild: ${interaction.guildId}, Role: ${roleId}, Changes: ${this.changes}`);
+
+                const embed = new EmbedBuilder()
+                    .setTitle('✅ Garde Rouge Configurée')
+                    .setDescription(
+                        `Le rôle ${interaction.guild.roles.cache.get(roleId)} a été promu Garde Rouge.\n\n` +
+                        '_Ces camarades veilleront à la bonne application des directives du Parti !_'
+                    )
+                    .setColor('#CC0000')
+                    .setFooter({ text: 'Configuration terminée' });
+
+                const returnButton = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('menu_config')
+                            .setLabel('Retour aux Directives')
+                            .setStyle(ButtonStyle.Secondary)
+                            .setEmoji('↩️')
+                    );
+
+                try {
+                    await interaction.update({ 
+                        embeds: [embed], 
+                        components: [returnButton]
+                    });
+                } catch (error) {
+                    console.error('Erreur lors de la mise à jour de l\'interaction:', error);
+                    if (error.code === 10062) {
+                        await interaction.reply({ 
+                            embeds: [embed], 
+                            components: [returnButton],
+                            ephemeral: true 
+                        });
+                    } else {
+                        throw error;
+                    }
+                }
+            });
+        });
+    }
+
+    // Sélection du canal de tableau d'honneur
+    else if (interaction.customId === 'select_leaderboard_channel') {
+        const channelId = interaction.values[0];
+        
+        // Récupérer la configuration existante
+        db.get('SELECT * FROM guild_config WHERE guild_id = ?', [interaction.guildId], (err, row) => {
+            if (err) {
+                console.error('Erreur lors de la vérification de la configuration:', err);
+                return;
+            }
+
+            let query;
+            let params;
+
+            if (row) {
+                // Mise à jour en préservant les autres valeurs
+                query = `UPDATE guild_config SET 
+                    leaderboard_channel_id = ?,
+                    mod_role_id = COALESCE(mod_role_id, ?),
+                    welcome_channel_id = COALESCE(welcome_channel_id, ?),
+                    welcome_title = COALESCE(welcome_title, ?),
+                    welcome_content = COALESCE(welcome_content, ?),
+                    welcome_image = COALESCE(welcome_image, ?)
+                    WHERE guild_id = ?`;
+                params = [
+                    channelId,
+                    row.mod_role_id,
+                    row.welcome_channel_id,
+                    row.welcome_title,
+                    row.welcome_content,
+                    row.welcome_image,
+                    interaction.guildId
+                ];
+            } else {
+                // Première insertion
+                query = `INSERT INTO guild_config (
+                    guild_id, 
+                    leaderboard_channel_id
+                ) VALUES (?, ?)`;
+                params = [interaction.guildId, channelId];
+            }
+
+            db.run(query, params, async function(err) {
+                if (err) {
+                    console.error('Erreur SQL lors de la sauvegarde du canal:', err);
+                    await interaction.reply({
+                        content: '❌ Une erreur s\'est produite lors de la configuration du canal !',
+                        ephemeral: true
+                    });
+                    return;
+                }
+
+                console.log(`Configuration sauvegardée - Guild: ${interaction.guildId}, Channel: ${channelId}, Changes: ${this.changes}`);
+
+                const embed = new EmbedBuilder()
+                    .setTitle('✅ Canal de Propagande Configuré')
+                    .setDescription(
+                        `Les tableaux d'honneur seront désormais publiés dans ${interaction.guild.channels.cache.get(channelId)}.\n\n` +
+                        '_Le Parti se réjouit de pouvoir célébrer ses héros dans ce canal !_'
+                    )
+                    .setColor('#CC0000')
+                    .setFooter({ text: 'Configuration terminée' });
+
+                const returnButton = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('menu_config')
+                            .setLabel('Retour aux Directives')
+                            .setStyle(ButtonStyle.Secondary)
+                            .setEmoji('↩️')
+                    );
+
+                try {
+                    await interaction.update({ 
+                        embeds: [embed], 
+                        components: [returnButton]
+                    });
+                } catch (error) {
+                    if (error.code === 10062) {
+                        await interaction.reply({ 
+                            embeds: [embed], 
+                            components: [returnButton],
+                            ephemeral: true 
+                        });
+                    } else {
+                        throw error;
+                    }
+                }
+            });
+        });
+    }
+
     // Menu Stats
     else if (interaction.customId === 'menu_stats') {
         db.get(
@@ -469,42 +843,137 @@ client.on('interactionCreate', async interaction => {
         await interaction.update({ embeds: [embed], components: [row, row2] });
     }
 
-    // Configuration du rôle
+    // Configuration du rôle de modérateur
     else if (interaction.customId === 'config_mod_role') {
-        const modal = new ModalBuilder()
-            .setCustomId('modal_role')
-            .setTitle('Configuration du Rôle Garde Rouge');
+        const roles = interaction.guild.roles.cache
+            .filter(role => role.id !== interaction.guild.id) // Exclure le rôle @everyone
+            .sort((a, b) => b.position - a.position) // Trier par position (plus haut en premier)
+            .first(25);
 
-        const roleInput = new TextInputBuilder()
-            .setCustomId('role_id')
-            .setLabel('ID du Rôle')
-            .setStyle(TextInputStyle.Short)
-            .setPlaceholder('Entrez l\'ID du rôle')
-            .setRequired(true);
+        const row = new ActionRowBuilder()
+            .addComponents(
+                new StringSelectMenuBuilder()
+                    .setCustomId('select_mod_role')
+                    .setPlaceholder('Sélectionner le rôle de Garde Rouge')
+                    .addOptions(
+                        roles.map(role => ({
+                            label: role.name,
+                            value: role.id,
+                            emoji: '👮'
+                        }))
+                    )
+            );
 
-        const firstActionRow = new ActionRowBuilder().addComponents(roleInput);
-        modal.addComponents(firstActionRow);
+        const embed = new EmbedBuilder()
+            .setTitle('👮 Configuration de la Garde Rouge')
+            .setDescription(
+                'Sélectionnez le rôle qui aura les privilèges de modération.\n\n' +
+                '_Ces camarades seront les gardiens de l\'ordre révolutionnaire._'
+            )
+            .setColor('#CC0000')
+            .setFooter({ text: 'Pour la gloire de la Révolution !' });
 
-        await interaction.showModal(modal);
+        await interaction.update({ embeds: [embed], components: [row] });
+    }
+
+    // Sélection du rôle de modérateur
+    else if (interaction.customId === 'select_mod_role') {
+        const roleId = interaction.values[0];
+        
+        // Vérifier si une configuration existe déjà
+        db.get('SELECT * FROM guild_config WHERE guild_id = ?', [interaction.guildId], (err, row) => {
+            if (err) {
+                console.error('Erreur lors de la vérification de la configuration:', err);
+                return;
+            }
+
+            const query = row 
+                ? 'UPDATE guild_config SET mod_role_id = ? WHERE guild_id = ?'
+                : 'INSERT INTO guild_config (mod_role_id, guild_id) VALUES (?, ?)';
+            
+            const params = row ? [roleId, interaction.guildId] : [roleId, interaction.guildId];
+
+            db.run(query, params, async function(err) {
+                if (err) {
+                    console.error('Erreur SQL lors de la sauvegarde du rôle:', err);
+                    await interaction.reply({
+                        content: '❌ Une erreur s\'est produite lors de la configuration du rôle !',
+                        ephemeral: true
+                    });
+                    return;
+                }
+
+                console.log(`Configuration sauvegardée - Guild: ${interaction.guildId}, Role: ${roleId}, Changes: ${this.changes}`);
+
+                const embed = new EmbedBuilder()
+                    .setTitle('✅ Garde Rouge Configurée')
+                    .setDescription(
+                        `Le rôle ${interaction.guild.roles.cache.get(roleId)} a été promu Garde Rouge.\n\n` +
+                        '_Ces camarades veilleront à la bonne application des directives du Parti !_'
+                    )
+                    .setColor('#CC0000')
+                    .setFooter({ text: 'Configuration terminée' });
+
+                const returnButton = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('menu_config')
+                            .setLabel('Retour aux Directives')
+                            .setStyle(ButtonStyle.Secondary)
+                            .setEmoji('↩️')
+                    );
+
+                try {
+                    await interaction.update({ 
+                        embeds: [embed], 
+                        components: [returnButton]
+                    });
+                } catch (error) {
+                    console.error('Erreur lors de la mise à jour de l\'interaction:', error);
+                    if (error.code === 10008) {
+                        await interaction.reply({ 
+                            embeds: [embed], 
+                            components: [returnButton],
+                            ephemeral: true 
+                        });
+                    } else {
+                        throw error;
+                    }
+                }
+            });
+        });
     }
 
     // Configuration du canal
     else if (interaction.customId === 'config_leaderboard') {
-        const modal = new ModalBuilder()
-            .setCustomId('modal_channel')
-            .setTitle('Configuration du Canal des Héros');
+        const channels = interaction.guild.channels.cache
+            .filter(ch => ch.type === ChannelType.GuildText)
+            .first(25);
 
-        const channelInput = new TextInputBuilder()
-            .setCustomId('channel_id')
-            .setLabel('ID du Canal')
-            .setStyle(TextInputStyle.Short)
-            .setPlaceholder('Entrez l\'ID du canal')
-            .setRequired(true);
+        const row = new ActionRowBuilder()
+            .addComponents(
+                new StringSelectMenuBuilder()
+                    .setCustomId('select_leaderboard_channel')
+                    .setPlaceholder('Sélectionner le canal de propagande')
+                    .addOptions(
+                        channels.map(channel => ({
+                            label: channel.name,
+                            value: channel.id,
+                            emoji: '📢'
+                        }))
+                    )
+            );
 
-        const firstActionRow = new ActionRowBuilder().addComponents(channelInput);
-        modal.addComponents(firstActionRow);
+        const embed = new EmbedBuilder()
+            .setTitle('📢 Configuration du Canal de Propagande')
+            .setDescription(
+                'Sélectionnez le canal où seront publiés les tableaux d\'honneur.\n\n' +
+                '_Le Parti y célébrera les exploits de ses plus fidèles serviteurs._'
+            )
+            .setColor('#CC0000')
+            .setFooter({ text: 'Pour la gloire de la Révolution !' });
 
-        await interaction.showModal(modal);
+        await interaction.update({ embeds: [embed], components: [row] });
     }
 
     // Configuration du salon de bienvenue
@@ -522,7 +991,7 @@ client.on('interactionCreate', async interaction => {
                         channels.map(channel => ({
                             label: channel.name,
                             value: channel.id,
-                            emoji: '📢'
+                            emoji: '🚩'
                         }))
                     )
             );
@@ -543,8 +1012,100 @@ client.on('interactionCreate', async interaction => {
     else if (interaction.customId === 'select_welcome_channel') {
         const channelId = interaction.values[0];
         
+        // Récupérer la configuration existante
+        db.get('SELECT * FROM guild_config WHERE guild_id = ?', [interaction.guildId], (err, row) => {
+            if (err) {
+                console.error('Erreur lors de la vérification de la configuration:', err);
+                return;
+            }
+
+            let query;
+            let params;
+
+            if (row) {
+                // Mise à jour en préservant les autres valeurs
+                query = `UPDATE guild_config SET 
+                    welcome_channel_id = ?,
+                    mod_role_id = COALESCE(mod_role_id, ?),
+                    leaderboard_channel_id = COALESCE(leaderboard_channel_id, ?),
+                    welcome_title = COALESCE(welcome_title, ?),
+                    welcome_content = COALESCE(welcome_content, ?),
+                    welcome_image = COALESCE(welcome_image, ?)
+                    WHERE guild_id = ?`;
+                params = [
+                    channelId,
+                    row.mod_role_id,
+                    row.leaderboard_channel_id,
+                    row.welcome_title,
+                    row.welcome_content,
+                    row.welcome_image,
+                    interaction.guildId
+                ];
+            } else {
+                // Première insertion
+                query = `INSERT INTO guild_config (
+                    guild_id, 
+                    welcome_channel_id
+                ) VALUES (?, ?)`;
+                params = [interaction.guildId, channelId];
+            }
+
+            db.run(query, params, async function(err) {
+                if (err) {
+                    console.error('Erreur SQL lors de la sauvegarde du canal:', err);
+                    await interaction.reply({
+                        content: '❌ Une erreur s\'est produite lors de la configuration du canal !',
+                        ephemeral: true
+                    });
+                    return;
+                }
+
+                console.log(`Configuration sauvegardée - Guild: ${interaction.guildId}, Welcome Channel: ${channelId}, Changes: ${this.changes}`);
+
+                const embed = new EmbedBuilder()
+                    .setTitle('✅ Canal d\'Accueil Configuré')
+                    .setDescription(
+                        `Les nouveaux camarades seront désormais accueillis dans ${interaction.guild.channels.cache.get(channelId)}.\n\n` +
+                        '_Le Parti se réjouit d\'accueillir de nouveaux membres dans ce canal !_'
+                    )
+                    .setColor('#CC0000')
+                    .setFooter({ text: 'Configuration terminée' });
+
+                const returnButton = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('menu_config')
+                            .setLabel('Retour aux Directives')
+                            .setStyle(ButtonStyle.Secondary)
+                            .setEmoji('↩️')
+                    );
+
+                try {
+                    await interaction.update({ 
+                        embeds: [embed], 
+                        components: [returnButton]
+                    });
+                } catch (error) {
+                    if (error.code === 10062) {
+                        await interaction.reply({ 
+                            embeds: [embed], 
+                            components: [returnButton],
+                            ephemeral: true 
+                        });
+                    } else {
+                        throw error;
+                    }
+                }
+            });
+        });
+    }
+
+    // Sélection du canal de tableau d'honneur
+    else if (interaction.customId === 'select_leaderboard_channel') {
+        const channelId = interaction.values[0];
+        
         db.run(
-            'INSERT OR REPLACE INTO guild_config (guild_id, welcome_channel_id) VALUES (?, ?)',
+            'INSERT OR REPLACE INTO guild_config (guild_id, leaderboard_channel_id) VALUES (?, ?)',
             [interaction.guildId, channelId],
             async err => {
                 if (err) {
@@ -557,10 +1118,10 @@ client.on('interactionCreate', async interaction => {
                 }
 
                 const embed = new EmbedBuilder()
-                    .setTitle('✅ Canal d\'Accueil Configuré')
+                    .setTitle('✅ Canal de Propagande Configuré')
                     .setDescription(
-                        `Les nouveaux camarades seront désormais accueillis dans ${interaction.guild.channels.cache.get(channelId)}.\n\n` +
-                        '_Le Parti se réjouit d\'accueillir de nouveaux membres dans ce canal !_'
+                        `Les tableaux d'honneur seront désormais publiés dans ${interaction.guild.channels.cache.get(channelId)}.\n\n` +
+                        '_Le Parti se réjouit de pouvoir célébrer ses héros dans ce canal !_'
                     )
                     .setColor('#CC0000')
                     .setFooter({ text: 'Configuration terminée' });
