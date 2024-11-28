@@ -11,7 +11,8 @@ const {
     TextInputBuilder,
     TextInputStyle,
     ModalBuilder,
-    PermissionsBitField
+    PermissionsBitField,
+    ActivityType
 } = require('discord.js');
 const sqlite3 = require('sqlite3').verbose();
 const cron = require('node-cron');
@@ -125,6 +126,31 @@ function initDatabase() {
 // Quand le bot est prêt
 client.once('ready', async () => {
     console.log(`${client.user.tag} est prêt !`);
+    
+    // Liste des statuts à alterner
+    const statuts = [
+        { name: '☭ Veille sur le Parti', type: ActivityType.Watching },
+        { name: '☭ Garde Rouge en service', type: ActivityType.Playing },
+        { name: '☭ L\'Internationale', type: ActivityType.Listening },
+        { name: '/dashboard', type: ActivityType.Listening }
+    ];
+    
+    let statutIndex = 0;
+    
+    // Définir le statut initial
+    client.user.setPresence({
+        activities: [statuts[0]],
+        status: 'online'
+    });
+    
+    // Changer le statut toutes les 3 minutes
+    setInterval(() => {
+        statutIndex = (statutIndex + 1) % statuts.length;
+        client.user.setPresence({
+            activities: [statuts[statutIndex]],
+            status: 'online'
+        });
+    }, 3 * 60 * 1000);
     
     try {
         // Enregistrer/mettre à jour la commande dashboard
