@@ -13,7 +13,9 @@ const {
     TextInputStyle,
     ModalBuilder,
     PermissionsBitField,
-    ActivityType
+    ActivityType,
+    RoleSelectMenuBuilder,
+    ChannelSelectMenuBuilder
 } = require('discord.js');
 const sqlite3 = require('sqlite3').verbose();
 const cron = require('node-cron');
@@ -317,7 +319,7 @@ client.on('interactionCreate', async interaction => {
     if (!interaction.guild) return;
 
     // Vérifier si c'est un bouton, une commande ou un menu
-    if (!interaction.isCommand() && !interaction.isStringSelectMenu() && !interaction.isButton() && !interaction.isModalSubmit() && !interaction.isUserSelectMenu()) return;
+    if (!interaction.isCommand() && !interaction.isStringSelectMenu() && !interaction.isButton() && !interaction.isModalSubmit() && !interaction.isUserSelectMenu() && !interaction.isRoleSelectMenu() && !interaction.isChannelSelectMenu()) return;
 
     // Vérifier les permissions pour la configuration
     if (interaction.customId?.startsWith('config_') || 
@@ -1237,8 +1239,12 @@ client.on('interactionCreate', async interaction => {
         const channelId = interaction.values[0];
         
         db.run(
-            'INSERT OR REPLACE INTO guild_config (guild_id, leaderboard_channel_id) VALUES (?, ?)',
-            [interaction.guildId, channelId],
+            `INSERT INTO guild_config (guild_id, leaderboard_channel_id) 
+             VALUES (?, ?)
+             ON CONFLICT(guild_id) 
+             DO UPDATE SET leaderboard_channel_id = ?
+             WHERE guild_id = ?`,
+            [interaction.guildId, channelId, channelId, interaction.guildId],
             async err => {
                 if (err) {
                     console.error('Erreur SQL:', err);
@@ -1280,8 +1286,12 @@ client.on('interactionCreate', async interaction => {
         const channelId = interaction.values[0];
         
         db.run(
-            'INSERT OR REPLACE INTO guild_config (guild_id, welcome_channel_id) VALUES (?, ?)',
-            [interaction.guildId, channelId],
+            `INSERT INTO guild_config (guild_id, welcome_channel_id) 
+             VALUES (?, ?)
+             ON CONFLICT(guild_id) 
+             DO UPDATE SET welcome_channel_id = ?
+             WHERE guild_id = ?`,
+            [interaction.guildId, channelId, channelId, interaction.guildId],
             async err => {
                 if (err) {
                     console.error('Erreur SQL:', err);
@@ -2318,6 +2328,68 @@ client.on('interactionCreate', async interaction => {
                 components: []
             });
         }
+    }
+
+    // Sélection du rôle de modérateur
+    else if (interaction.customId === 'config_mod_role') {
+        // Créer le menu de sélection pour le rôle de Garde Rouge
+        const roles = await interaction.guild.roles.fetch();
+        const selectMenu = new ActionRowBuilder()
+            .addComponents(
+                new RoleSelectMenuBuilder()
+                    .setCustomId('select_mod_role')
+                    .setPlaceholder('Sélectionner le rôle de Garde Rouge')
+            );
+
+        await interaction.update({
+            content: 'Sélectionnez le rôle qui sera désigné comme Garde Rouge :',
+            components: [selectMenu],
+            ephemeral: true
+        });
+    }
+
+    // Sélection du canal de propagande
+    else if (interaction.customId === 'config_leaderboard') {
+        // Créer le menu de sélection pour le canal de propagande
+        const channels = interaction.guild.channels.cache.filter(channel => 
+            channel.type === ChannelType.GuildText
+        );
+
+        const selectMenu = new ActionRowBuilder()
+            .addComponents(
+                new ChannelSelectMenuBuilder()
+                    .setCustomId('select_leaderboard_channel')
+                    .setPlaceholder('Sélectionner le canal de propagande')
+                    .setChannelTypes(ChannelType.GuildText)
+            );
+
+        await interaction.update({
+            content: 'Sélectionnez le canal qui servira de canal de propagande :',
+            components: [selectMenu],
+            ephemeral: true
+        });
+    }
+
+    // Sélection du canal d'accueil
+    else if (interaction.customId === 'config_welcome_channel') {
+        // Créer le menu de sélection pour le canal d'accueil
+        const channels = interaction.guild.channels.cache.filter(channel => 
+            channel.type === ChannelType.GuildText
+        );
+
+        const selectMenu = new ActionRowBuilder()
+            .addComponents(
+                new ChannelSelectMenuBuilder()
+                    .setCustomId('select_welcome_channel')
+                    .setPlaceholder('Sélectionner le canal d\'accueil')
+                    .setChannelTypes(ChannelType.GuildText)
+            );
+
+        await interaction.update({
+            content: 'Sélectionnez le canal qui servira de canal d\'accueil :',
+            components: [selectMenu],
+            ephemeral: true
+        });
     }
 });
 
