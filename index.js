@@ -8,6 +8,7 @@ const {
     EmbedBuilder,
     ChannelType,
     StringSelectMenuBuilder,
+    UserSelectMenuBuilder,
     TextInputBuilder,
     TextInputStyle,
     ModalBuilder,
@@ -29,13 +30,16 @@ const client = new Client({
 // Configuration par défaut
 const CONFIG = {
     XP_PAR_MESSAGE: 1,
-    XP_ACTIONS: {
-        WARN: 2,
-        MUTE: 3,
-        KICK: 5,
-        BAN: 10
-    },
-    COOLDOWN_MESSAGE: 60000 // 1 minute entre chaque gain d'XP par message
+    XP_MULTIPLICATEUR: 1.5,
+    COOLDOWN: 60000,
+    ACTIONS: {
+        WARN: { xp: 5, description: 'Avertissement' },
+        MUTE: { xp: 10, description: 'Réduction au silence' },
+        KICK: { xp: 15, description: 'Exclusion' },
+        BAN: { xp: 25, description: 'Bannissement' },
+        DELETE: { xp: 3, description: 'Suppression de message' },
+        TIMEOUT: { xp: 8, description: 'Mise en isolement' }
+    }
 };
 
 // Cache pour le cooldown des messages
@@ -58,68 +62,68 @@ const db = new sqlite3.Database('bot.db', (err) => {
 
 // Fonction d'initialisation de la base de données
 function initDatabase() {
-    db.get("SELECT name FROM sqlite_master WHERE type='table' AND name='guild_config'", (err, row) => {
-        if (err) {
-            console.error('Erreur lors de la vérification des tables:', err);
-            return;
-        }
+    db.serialize(() => {
+        // Table pour les points de mérite
+        db.run(`CREATE TABLE IF NOT EXISTS mod_xp (
+            user_id TEXT,
+            guild_id TEXT,
+            xp INTEGER DEFAULT 0,
+            weekly_xp INTEGER DEFAULT 0,
+            PRIMARY KEY (user_id, guild_id)
+        )`, err => {
+            if (err) {
+                console.error('Erreur lors de la création de la table mod_xp:', err);
+            } else {
+                console.log('Table mod_xp vérifiée avec succès');
+            }
+        });
 
-        // Si les tables n'existent pas, on les crée
-        if (!row) {
-            console.log('Création des tables...');
-            db.serialize(() => {
-                // Table pour les points de mérite
-                db.run(`CREATE TABLE IF NOT EXISTS mod_xp (
-                    user_id TEXT,
-                    guild_id TEXT,
-                    xp INTEGER DEFAULT 0,
-                    weekly_xp INTEGER DEFAULT 0,
-                    PRIMARY KEY (user_id, guild_id)
-                )`, err => {
-                    if (err) {
-                        console.error('Erreur lors de la création de la table mod_xp:', err);
-                    } else {
-                        console.log('Table mod_xp créée avec succès');
-                    }
-                });
+        // Table pour les actions de modération
+        db.run(`CREATE TABLE IF NOT EXISTS mod_actions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT,
+            guild_id TEXT,
+            action_type TEXT,
+            xp_gained INTEGER,
+            week_number INTEGER,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )`, err => {
+            if (err) {
+                console.error('Erreur lors de la création de la table mod_actions:', err);
+            } else {
+                console.log('Table mod_actions vérifiée avec succès');
+            }
+        });
 
-                // Table pour les actions de modération
-                db.run(`CREATE TABLE IF NOT EXISTS mod_actions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id TEXT,
-                    guild_id TEXT,
-                    action_type TEXT,
-                    xp_gained INTEGER,
-                    week_number INTEGER,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-                )`, err => {
-                    if (err) {
-                        console.error('Erreur lors de la création de la table mod_actions:', err);
-                    } else {
-                        console.log('Table mod_actions créée avec succès');
-                    }
-                });
+        // Table de configuration
+        db.run(`CREATE TABLE IF NOT EXISTS guild_config (
+            guild_id TEXT PRIMARY KEY,
+            mod_role_id TEXT,
+            leaderboard_channel_id TEXT,
+            welcome_channel_id TEXT,
+            welcome_title TEXT,
+            welcome_content TEXT,
+            welcome_image TEXT
+        )`, err => {
+            if (err) {
+                console.error('Erreur lors de la création de la table guild_config:', err);
+            } else {
+                console.log('Table guild_config vérifiée avec succès');
+            }
+        });
 
-                // Table de configuration
-                db.run(`CREATE TABLE IF NOT EXISTS guild_config (
-                    guild_id TEXT PRIMARY KEY,
-                    mod_role_id TEXT,
-                    leaderboard_channel_id TEXT,
-                    welcome_channel_id TEXT,
-                    welcome_title TEXT,
-                    welcome_content TEXT,
-                    welcome_image TEXT
-                )`, err => {
-                    if (err) {
-                        console.error('Erreur lors de la création de la table guild_config:', err);
-                    } else {
-                        console.log('Table guild_config créée avec succès');
-                    }
-                });
-            });
-        } else {
-            console.log('Les tables existent déjà');
-        }
+        // Table des destinataires des rapports
+        db.run(`CREATE TABLE IF NOT EXISTS report_recipients (
+            guild_id TEXT,
+            user_id TEXT,
+            PRIMARY KEY (guild_id, user_id)
+        )`, err => {
+            if (err) {
+                console.error('Erreur lors de la création de la table report_recipients:', err);
+            } else {
+                console.log('Table report_recipients vérifiée avec succès');
+            }
+        });
     });
 }
 
@@ -184,6 +188,55 @@ async function isModerateur(member) {
             }
         );
     });
+}
+
+// Fonction pour vérifier le rôle de modérateur
+async function checkModRole(interaction) {
+    try {
+        // Vérifier si l'utilisateur est administrateur
+        if (interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+            return true;
+        }
+
+        // Récupérer le rôle de modérateur depuis la base de données
+        const config = await new Promise((resolve, reject) => {
+            db.get('SELECT mod_role_id FROM guild_config WHERE guild_id = ?', 
+                [interaction.guildId], 
+                (err, row) => {
+                    if (err) reject(err);
+                    else resolve(row);
+                }
+            );
+        });
+
+        // Si aucun rôle n'est configuré
+        if (!config?.mod_role_id) {
+            await interaction.reply({
+                content: '❌ Le rôle de modérateur n\'est pas configuré. Un administrateur doit d\'abord configurer le rôle via le menu de configuration.',
+                ephemeral: true
+            });
+            return false;
+        }
+
+        // Vérifier si l'utilisateur a le rôle
+        const hasRole = interaction.member.roles.cache.has(config.mod_role_id);
+        if (!hasRole) {
+            await interaction.reply({
+                content: '❌ Vous n\'avez pas la permission d\'utiliser cette commande.',
+                ephemeral: true
+            });
+            return false;
+        }
+
+        return true;
+    } catch (error) {
+        console.error('Erreur lors de la vérification du rôle de modérateur:', error);
+        await interaction.reply({
+            content: '❌ Une erreur s\'est produite lors de la vérification des permissions.',
+            ephemeral: true
+        });
+        return false;
+    }
 }
 
 // Fonction pour envoyer le leaderboard
@@ -264,7 +317,7 @@ client.on('interactionCreate', async interaction => {
     if (!interaction.guild) return;
 
     // Vérifier si c'est un bouton, une commande ou un menu
-    if (!interaction.isCommand() && !interaction.isStringSelectMenu() && !interaction.isButton() && !interaction.isModalSubmit()) return;
+    if (!interaction.isCommand() && !interaction.isStringSelectMenu() && !interaction.isButton() && !interaction.isModalSubmit() && !interaction.isUserSelectMenu()) return;
 
     // Vérifier les permissions pour la configuration
     if (interaction.customId?.startsWith('config_') || 
@@ -276,7 +329,7 @@ client.on('interactionCreate', async interaction => {
         
         // Vérifier si l'utilisateur a les permissions d'administrateur
         if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
-            await interaction.reply({ 
+            await interaction.update({ 
                 content: '❌ Seuls les administrateurs peuvent configurer le bot !', 
                 ephemeral: true 
             });
@@ -303,7 +356,7 @@ client.on('interactionCreate', async interaction => {
             // Si aucun rôle de modération n'est configuré, autoriser uniquement les administrateurs
             if (!modRoleId) {
                 if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
-                    await interaction.reply({ 
+                    await interaction.update({ 
                         content: '❌ Aucun rôle de modération configuré. Seuls les administrateurs peuvent utiliser ces commandes !', 
                         ephemeral: true 
                     });
@@ -313,7 +366,7 @@ client.on('interactionCreate', async interaction => {
                 // Vérifier si l'utilisateur a le rôle de modération ou est administrateur
                 if (!interaction.member.roles.cache.has(modRoleId) && 
                     !interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
-                    await interaction.reply({ 
+                    await interaction.update({ 
                         content: '❌ Vous n\'avez pas les permissions nécessaires !', 
                         ephemeral: true 
                     });
@@ -322,7 +375,7 @@ client.on('interactionCreate', async interaction => {
             }
         } catch (error) {
             console.error('Erreur lors de la vérification des permissions:', error);
-            await interaction.reply({ 
+            await interaction.update({ 
                 content: '❌ Une erreur s\'est produite lors de la vérification des permissions !', 
                 ephemeral: true 
             });
@@ -332,44 +385,65 @@ client.on('interactionCreate', async interaction => {
 
     // Menu principal - Dashboard
     if (interaction.commandName === 'dashboard' || interaction.customId === 'return_dashboard') {
-        const mainRow = new ActionRowBuilder()
-            .addComponents(
-                new ButtonBuilder()
-                    .setCustomId('menu_mod')
-                    .setLabel('Justice du Parti')
-                    .setStyle(ButtonStyle.Danger)
-                    .setEmoji('⚔️'),
-                new ButtonBuilder()
-                    .setCustomId('menu_stats')
-                    .setLabel('Médailles du Mérite')
-                    .setStyle(ButtonStyle.Primary)
-                    .setEmoji('🎖️'),
-                new ButtonBuilder()
-                    .setCustomId('menu_config')
-                    .setLabel('Directives du Parti')
-                    .setStyle(ButtonStyle.Secondary)
-                    .setEmoji('⚙️')
-            );
-
-        const mainEmbed = new EmbedBuilder()
-            .setTitle('☭ Bureau Politique du Parti ☭')
-            .setDescription(
-                'Bienvenue, Camarade ! Le Parti vous salue !\n\n' +
-                '⚔️ **Justice du Parti** - Faire respecter la discipline révolutionnaire\n' +
-                '🎖️ **Médailles du Mérite** - Honorer les services rendus au Parti\n' +
-                '⚙️ **Directives du Parti** - Appliquer la ligne politique'
-            )
-            .setColor('#CC0000')
-            .setFooter({ text: 'Pour la gloire de la Révolution !' });
-
         try {
+            const mainRow = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('menu_justice')
+                        .setLabel('Tribunal Révolutionnaire')
+                        .setStyle(ButtonStyle.Danger)
+                        .setEmoji('⚔️'),
+                    new ButtonBuilder()
+                        .setCustomId('menu_medals')
+                        .setLabel('Ordre du Drapeau Rouge')
+                        .setStyle(ButtonStyle.Primary)
+                        .setEmoji('🎖️'),
+                    new ButtonBuilder()
+                        .setCustomId('menu_config')
+                        .setLabel('Directives du Parti')
+                        .setStyle(ButtonStyle.Secondary)
+                        .setEmoji('⭐')
+                );
+
+            const mainEmbed = new EmbedBuilder()
+                .setTitle('⭐ Quartier Général du Parti ⭐')
+                .setDescription(
+                    '**Camarade Commissaire, bienvenue au QG !**\n\n' +
+                    'Choisissez votre département :\n\n' +
+                    '⚔️ **Tribunal Révolutionnaire**\n' +
+                    '› Justice prolétarienne et discipline révolutionnaire\n\n' +
+                    '🎖️ **Ordre du Drapeau Rouge**\n' +
+                    '› Décorations et mérites des camarades\n\n' +
+                    '⭐ **Directives du Parti**\n' +
+                    '› Administration centrale du Parti'
+                )
+                .setColor('#CC0000')
+                .setFooter({ text: 'Prolétaires de tous les serveurs, unissez-vous !' });
+
             if (interaction.commandName === 'dashboard') {
-                await interaction.reply({ embeds: [mainEmbed], components: [mainRow], ephemeral: true });
+                await interaction.reply({
+                    embeds: [mainEmbed],
+                    components: [mainRow],
+                    ephemeral: true
+                });
             } else {
-                await interaction.update({ embeds: [mainEmbed], components: [mainRow] });
+                await interaction.update({
+                    embeds: [mainEmbed],
+                    components: [mainRow]
+                });
             }
         } catch (error) {
-            console.error('Erreur lors du retour au menu principal:', error);
+            console.error('Erreur lors de l\'affichage du dashboard:', error);
+            const errorMessage = {
+                content: '❌ Une erreur s\'est produite lors de l\'affichage du menu.',
+                ephemeral: true
+            };
+            
+            if (interaction.commandName === 'dashboard') {
+                await interaction.reply(errorMessage);
+            } else {
+                await interaction.followUp(errorMessage);
+            }
         }
     }
 
@@ -415,6 +489,11 @@ client.on('interactionCreate', async interaction => {
                 const row2 = new ActionRowBuilder()
                     .addComponents(
                         new ButtonBuilder()
+                            .setCustomId('config_recipients')
+                            .setLabel('Destinataires Rapports')
+                            .setStyle(ButtonStyle.Primary)
+                            .setEmoji('📬'),
+                        new ButtonBuilder()
                             .setCustomId('return_dashboard')
                             .setLabel('Retour')
                             .setStyle(ButtonStyle.Secondary)
@@ -438,62 +517,66 @@ client.on('interactionCreate', async interaction => {
         );
     }
 
-    // Retour au menu principal
-    else if (interaction.customId === 'return_dashboard') {
+    // Menu Justice
+    else if (interaction.customId === 'menu_justice') {
         try {
-            const mainEmbed = new EmbedBuilder()
-                .setTitle('☭ Bureau Politique du Parti ☭')
-                .setDescription(
-                    'Bienvenue au Bureau Politique, Camarade.\n\n' +
-                    'Sélectionnez votre département :\n\n' +
-                    '🛡️ **Justice du Parti** - Gestion de la modération\n' +
-                    '📊 **Médailles du Mérite** - Statistiques et XP\n' +
-                    '⚙️ **Directives du Parti** - Configuration'
-                )
-                .setColor('#CC0000')
-                .setFooter({ text: 'Le Parti guide nos actions !' });
-
-            const row = new ActionRowBuilder()
-                .addComponents(
-                    new ButtonBuilder()
-                        .setCustomId('menu_mod')
-                        .setLabel('Justice du Parti')
-                        .setStyle(ButtonStyle.Danger)
-                        .setEmoji('🛡️'),
-                    new ButtonBuilder()
-                        .setCustomId('menu_stats')
-                        .setLabel('Médailles du Mérite')
-                        .setStyle(ButtonStyle.Primary)
-                        .setEmoji('📊'),
-                    new ButtonBuilder()
-                        .setCustomId('menu_config')
-                        .setLabel('Directives du Parti')
-                        .setStyle(ButtonStyle.Secondary)
-                        .setEmoji('⚙️')
-                );
-
-            try {
-                await interaction.update({
-                    embeds: [mainEmbed],
-                    components: [row]
+            // Vérifier le rôle de modérateur
+            if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+                const config = await new Promise((resolve, reject) => {
+                    db.get('SELECT mod_role_id FROM guild_config WHERE guild_id = ?', 
+                        [interaction.guildId], 
+                        (err, row) => {
+                            if (err) reject(err);
+                            else resolve(row);
+                        }
+                    );
                 });
-            } catch (error) {
-                if (error.code === 10062) { // Unknown Interaction
-                    // Si l'interaction est expirée, on crée une nouvelle réponse
-                    await interaction.reply({
-                        embeds: [mainEmbed],
-                        components: [row],
+
+                if (!config?.mod_role_id || !interaction.member.roles.cache.has(config.mod_role_id)) {
+                    await interaction.update({
+                        content: '❌ Vous n\'avez pas l\'autorisation du Parti pour accéder à ce département !',
                         ephemeral: true
                     });
-                } else {
-                    throw error;
+                    return;
                 }
             }
+
+            // Créer le menu de sélection d'action
+            const actionSelect = new StringSelectMenuBuilder()
+                .setCustomId('select_action_type')
+                .setPlaceholder('Type d\'action')
+                .addOptions(
+                    Object.entries(CONFIG.ACTIONS).map(([key, value]) => ({
+                        label: value.description,
+                        description: `${value.xp} points de mérite`,
+                        value: key
+                    }))
+                );
+
+            const row = new ActionRowBuilder()
+                .addComponents(actionSelect);
+
+            const embed = new EmbedBuilder()
+                .setTitle('⚔️ Tribunal Révolutionnaire ⚔️')
+                .setDescription(
+                    'Sélectionnez le type d\'action que vous avez effectué.\n\n' +
+                    '**Récompenses du Parti :**\n' +
+                    Object.entries(CONFIG.ACTIONS)
+                        .map(([key, value]) => `${value.description}: ${value.xp} points de mérite`)
+                        .join('\n')
+                )
+                .setColor('#CC0000')
+                .setFooter({ text: 'La Justice du Peuple est implacable !' });
+
+            await interaction.update({
+                embeds: [embed],
+                components: [row]
+            });
         } catch (error) {
-            console.error('Erreur lors du retour au menu principal:', error);
+            console.error('Erreur lors de l\'affichage du menu justice:', error);
             try {
-                await interaction.reply({
-                    content: 'Une erreur s\'est produite lors du retour au menu principal. Utilisez `/dashboard` pour recommencer.',
+                await interaction.update({
+                    content: '❌ Une erreur s\'est produite dans les rouages de la justice prolétarienne.',
                     ephemeral: true
                 });
             } catch (replyError) {
@@ -502,96 +585,571 @@ client.on('interactionCreate', async interaction => {
         }
     }
 
-    // Menu configuration
-    else if (interaction.customId === 'menu_config') {
+    // Menu Médailles
+    else if (interaction.customId === 'menu_medals') {
         try {
-            db.get(
-                'SELECT mod_role_id, leaderboard_channel_id, welcome_channel_id FROM guild_config WHERE guild_id = ?',
-                [interaction.guildId],
-                async (err, row) => {
-                    if (err) {
-                        console.error('Erreur SQL:', err);
-                        return;
+            // Récupérer les statistiques de l'utilisateur
+            const stats = await new Promise((resolve, reject) => {
+                db.get(
+                    'SELECT xp, weekly_xp FROM mod_xp WHERE user_id = ? AND guild_id = ?',
+                    [interaction.user.id, interaction.guildId],
+                    (err, row) => {
+                        if (err) reject(err);
+                        else resolve(row || { xp: 0, weekly_xp: 0 });
                     }
+                );
+            });
 
-                    const currentModRole = row?.mod_role_id ? `<@&${row.mod_role_id}>` : 'Non assigné';
-                    const currentChannel = row?.leaderboard_channel_id ? `<#${row.leaderboard_channel_id}>` : 'Non assigné';
-                    const welcomeChannel = row?.welcome_channel_id ? `<#${row.welcome_channel_id}>` : 'Non assigné';
-
-                    const row1 = new ActionRowBuilder()
-                        .addComponents(
-                            new ButtonBuilder()
-                                .setCustomId('config_mod_role')
-                                .setLabel('Garde Rouge')
-                                .setStyle(ButtonStyle.Danger)
-                                .setEmoji('👮'),
-                            new ButtonBuilder()
-                                .setCustomId('config_leaderboard')
-                                .setLabel('Canal de Propagande')
-                                .setStyle(ButtonStyle.Primary)
-                                .setEmoji('📢'),
-                            new ButtonBuilder()
-                                .setCustomId('config_welcome_channel')
-                                .setLabel('Canal d\'Accueil')
-                                .setStyle(ButtonStyle.Primary)
-                                .setEmoji('🚩'),
-                            new ButtonBuilder()
-                                .setCustomId('welcome_config')
-                                .setLabel('Message d\'Accueil')
-                                .setStyle(ButtonStyle.Primary)
-                                .setEmoji('📨')
-                        );
-
-                    const row2 = new ActionRowBuilder()
-                        .addComponents(
-                            new ButtonBuilder()
-                                .setCustomId('return_dashboard')
-                                .setLabel('Retour')
-                                .setStyle(ButtonStyle.Secondary)
-                                .setEmoji('↩️')
-                        );
-
-                    const embed = new EmbedBuilder()
-                        .setTitle('⚙️ Directives du Parti ⚙️')
-                        .setDescription(
-                            'Configuration actuelle :\n\n' +
-                            `👮 **Garde Rouge** - ${currentModRole}\n` +
-                            `📢 **Canal de Propagande** - ${currentChannel}\n` +
-                            `🚩 **Canal d'Accueil** - ${welcomeChannel}\n` +
-                            '📨 **Message d\'Accueil** - Message de bienvenue révolutionnaire'
-                        )
-                        .setColor('#CC0000')
-                        .setFooter({ text: 'Le Parti guide nos actions !' });
-
-                    try {
-                        await interaction.update({ 
-                            embeds: [embed], 
-                            components: [row1, row2] 
-                        });
-                    } catch (error) {
-                        if (error.code === 10062) {
-                            await interaction.reply({
-                                embeds: [embed],
-                                components: [row1, row2],
-                                ephemeral: true
-                            });
-                        } else {
-                            throw error;
-                        }
+            // Récupérer le classement
+            const rankings = await new Promise((resolve, reject) => {
+                db.all(
+                    `SELECT user_id, xp, weekly_xp,
+                    RANK() OVER (ORDER BY xp DESC) as total_rank,
+                    RANK() OVER (ORDER BY weekly_xp DESC) as weekly_rank
+                    FROM mod_xp 
+                    WHERE guild_id = ?`,
+                    [interaction.guildId],
+                    (err, rows) => {
+                        if (err) reject(err);
+                        else resolve(rows || []);
                     }
-                }
-            );
+                );
+            });
+
+            // Trouver le rang de l'utilisateur
+            const userRanking = rankings.find(r => r.user_id === interaction.user.id) || {
+                total_rank: rankings.length + 1,
+                weekly_rank: rankings.length + 1
+            };
+
+            // Créer l'embed
+            const embed = new EmbedBuilder()
+                .setTitle('🎖️ Ordre du Drapeau Rouge 🎖️')
+                .setDescription(
+                    `**Camarade ${interaction.user.username},**\n\n` +
+                    `**Points de Mérite Révolutionnaire**\n` +
+                    `› Total : ${stats.xp} PMR\n` +
+                    `› Cette semaine : ${stats.weekly_xp} PMR\n\n` +
+                    `**Position dans le Parti**\n` +
+                    `› Classement historique : #${userRanking.total_rank}\n` +
+                    `› Classement hebdomadaire : #${userRanking.weekly_rank}\n\n` +
+                    '**Héros de la Révolution**\n' +
+                    await formatTop5(interaction.guild, rankings, 'xp') +
+                    '\n**Héros de la Semaine**\n' +
+                    await formatTop5(interaction.guild, rankings, 'weekly_xp')
+                )
+                .setColor('#CC0000')
+                .setFooter({ text: 'La Gloire du Parti resplendit à travers ses serviteurs !' });
+
+            // Bouton de retour
+            const row = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('return_dashboard')
+                        .setLabel('Retour au QG')
+                        .setStyle(ButtonStyle.Secondary)
+                        .setEmoji('↩️')
+                );
+
+            await interaction.update({
+                embeds: [embed],
+                components: [row]
+            });
         } catch (error) {
-            console.error('Erreur lors de l\'affichage du menu de configuration:', error);
+            console.error('Erreur lors de l\'affichage des médailles:', error);
             try {
-                await interaction.reply({
-                    content: 'Une erreur s\'est produite. Utilisez `/dashboard` pour recommencer.',
+                await interaction.update({
+                    content: '❌ Une erreur s\'est produite dans les archives du Parti.',
                     ephemeral: true
                 });
             } catch (replyError) {
                 console.error('Erreur lors de la réponse d\'erreur:', replyError);
             }
         }
+    }
+
+    // Déclaration d'action
+    else if (interaction.customId === 'declarer_action') {
+        // Vérifier le rôle de modérateur
+        const hasModRole = await checkModRole(interaction);
+        if (!hasModRole) return;
+
+        const actionSelect = new StringSelectMenuBuilder()
+            .setCustomId('select_action_type')
+            .setPlaceholder('Type d\'action')
+            .addOptions(
+                Object.entries(CONFIG.ACTIONS).map(([key, value]) => ({
+                    label: value.description,
+                    description: `${value.xp} points de mérite`,
+                    value: key
+                }))
+            );
+
+        const row = new ActionRowBuilder()
+            .addComponents(actionSelect);
+
+        const embed = new EmbedBuilder()
+            .setTitle('📝 Déclaration d\'Action')
+            .setDescription('Sélectionnez le type d\'action que vous avez effectué.')
+            .setColor('#CC0000')
+            .setFooter({ text: 'Le Parti vous remercie de votre vigilance' });
+
+        try {
+            await interaction.update({
+                embeds: [embed],
+                components: [row]
+            });
+        } catch (error) {
+            if (error.code === 10062) {
+                await interaction.reply({
+                    embeds: [embed],
+                    components: [row],
+                    ephemeral: true
+                });
+            } else {
+                throw error;
+            }
+        }
+    }
+
+    // Sélection du type d'action
+    else if (interaction.customId === 'select_action_type') {
+        const actionType = interaction.values[0];
+
+        try {
+            // Créer un menu pour sélectionner l'utilisateur
+            const embed = new EmbedBuilder()
+                .setTitle('👤 Sélection de l\'Utilisateur')
+                .setDescription('Mentionnez l\'utilisateur concerné par cette action.')
+                .setColor('#CC0000')
+                .setFooter({ text: 'Le Parti demande des comptes !' });
+
+            const row = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId(`select_user_${actionType}`)
+                        .setLabel('Sélectionner un Utilisateur')
+                        .setStyle(ButtonStyle.Primary)
+                        .setEmoji('👤'),
+                    new ButtonBuilder()
+                        .setCustomId('menu_justice')
+                        .setLabel('Annuler')
+                        .setStyle(ButtonStyle.Secondary)
+                        .setEmoji('↩️')
+                );
+
+            try {
+                await interaction.update({
+                    embeds: [embed],
+                    components: [row]
+                });
+            } catch (error) {
+                // Si l'interaction a expiré, on crée une nouvelle réponse
+                if (error.code === 10062) {
+                    await interaction.reply({
+                        embeds: [embed],
+                        components: [row],
+                        ephemeral: true
+                    });
+                } else {
+                    throw error;
+                }
+            }
+        } catch (error) {
+            console.error('Erreur lors de la sélection de l\'utilisateur:', error);
+            try {
+                await interaction.update({
+                    content: '❌ Une erreur s\'est produite. Veuillez réessayer.',
+                    ephemeral: true
+                });
+            } catch (replyError) {
+                console.error('Erreur lors de la réponse d\'erreur:', replyError);
+            }
+        }
+    }
+
+    // Sélection de l'utilisateur
+    else if (interaction.customId.startsWith('select_user_')) {
+        try {
+            const actionType = interaction.customId.split('_')[2];
+
+            // Créer le modal pour les détails
+            const modal = new ModalBuilder()
+                .setCustomId(`action_details_${actionType}`)
+                .setTitle('Rapport d\'Action');
+
+            // Champ pour l'utilisateur ciblé
+            const userInput = new TextInputBuilder()
+                .setCustomId('target_user')
+                .setLabel('ID de l\'utilisateur')
+                .setStyle(TextInputStyle.Short)
+                .setPlaceholder('Collez l\'ID ou le @mention de l\'utilisateur')
+                .setRequired(true);
+
+            // Champ pour la raison
+            const reasonInput = new TextInputBuilder()
+                .setCustomId('reason')
+                .setLabel('Raison de l\'action')
+                .setStyle(TextInputStyle.Paragraph)
+                .setPlaceholder('Expliquez pourquoi cette action est nécessaire')
+                .setRequired(true);
+
+            // Champ pour les preuves (optionnel)
+            const evidenceInput = new TextInputBuilder()
+                .setCustomId('evidence')
+                .setLabel('Preuves (optionnel)')
+                .setStyle(TextInputStyle.Paragraph)
+                .setPlaceholder('Liens vers des messages, captures d\'écran, etc.')
+                .setRequired(false);
+
+            const firstRow = new ActionRowBuilder().addComponents(userInput);
+            const secondRow = new ActionRowBuilder().addComponents(reasonInput);
+            const thirdRow = new ActionRowBuilder().addComponents(evidenceInput);
+
+            modal.addComponents(firstRow, secondRow, thirdRow);
+
+            await interaction.showModal(modal);
+        } catch (error) {
+            console.error('Erreur lors de l\'affichage du modal:', error);
+            try {
+                await interaction.update({
+                    content: '❌ Une erreur s\'est produite. Veuillez réessayer via le menu Justice.',
+                    ephemeral: true
+                });
+            } catch (replyError) {
+                console.error('Erreur lors de la réponse d\'erreur:', replyError);
+            }
+        }
+    }
+
+    // Traitement du rapport d'action
+    else if (interaction.isModalSubmit() && interaction.customId.startsWith('action_details_')) {
+        try {
+            const actionType = interaction.customId.split('_')[2];
+            const xpGained = CONFIG.ACTIONS[actionType].xp;
+            const weekNumber = getWeekNumber();
+
+            // Récupérer les détails du formulaire
+            const targetUser = interaction.fields.getTextInputValue('target_user');
+            const reason = interaction.fields.getTextInputValue('reason');
+            const evidence = interaction.fields.getTextInputValue('evidence');
+
+            // Enregistrer l'action dans la base de données
+            await new Promise((resolve, reject) => {
+                db.run(
+                    'INSERT INTO mod_actions (user_id, guild_id, action_type, xp_gained, week_number) VALUES (?, ?, ?, ?, ?)',
+                    [interaction.user.id, interaction.guildId, actionType, xpGained, weekNumber],
+                    function(err) {
+                        if (err) reject(err);
+                        else resolve();
+                    }
+                );
+            });
+
+            // Mettre à jour l'XP
+            await new Promise((resolve, reject) => {
+                db.run(
+                    `INSERT INTO mod_xp (user_id, guild_id, xp, weekly_xp)
+                     VALUES (?, ?, ?, ?)
+                     ON CONFLICT(user_id, guild_id) DO UPDATE SET
+                     xp = xp + ?,
+                     weekly_xp = weekly_xp + ?`,
+                    [interaction.user.id, interaction.guildId, xpGained, xpGained, xpGained, xpGained],
+                    function(err) {
+                        if (err) reject(err);
+                        else resolve();
+                    }
+                );
+            });
+
+            // Obtenir le total d'XP
+            const xpData = await new Promise((resolve, reject) => {
+                db.get(
+                    'SELECT xp, weekly_xp FROM mod_xp WHERE user_id = ? AND guild_id = ?',
+                    [interaction.user.id, interaction.guildId],
+                    (err, row) => {
+                        if (err) reject(err);
+                        else resolve(row);
+                    }
+                );
+            });
+
+            // Créer l'embed de confirmation
+            const confirmEmbed = new EmbedBuilder()
+                .setTitle('✅ Action Enregistrée')
+                .setDescription(
+                    `**Action:** ${CONFIG.ACTIONS[actionType].description}\n` +
+                    `**Points gagnés:** ${xpGained}\n\n` +
+                    `**Total:** ${xpData.xp} points\n` +
+                    `**Cette semaine:** ${xpData.weekly_xp} points`
+                )
+                .setColor('#00CC00')
+                .setFooter({ text: 'Gloire aux gardiens de l\'ordre !' });
+
+            // Créer l'embed du rapport
+            const reportEmbed = new EmbedBuilder()
+                .setTitle('📋 Rapport d\'Action de Modération')
+                .setDescription(`Une action de modération a été effectuée par ${interaction.user}.`)
+                .addFields(
+                    { 
+                        name: '🛠️ Type d\'action', 
+                        value: CONFIG.ACTIONS[actionType].description 
+                    },
+                    { 
+                        name: '👤 Modérateur', 
+                        value: `${interaction.user.tag} (${interaction.user.id})` 
+                    },
+                    { 
+                        name: '🎯 Utilisateur ciblé', 
+                        value: targetUser 
+                    },
+                    { 
+                        name: '📝 Raison', 
+                        value: reason 
+                    }
+                )
+                .setColor('#CC0000')
+                .setTimestamp();
+
+            if (evidence) {
+                reportEmbed.addFields({ name: '🔍 Preuves', value: evidence });
+            }
+
+            const returnButton = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('menu_justice')
+                        .setLabel('Retour à la Justice')
+                        .setStyle(ButtonStyle.Secondary)
+                        .setEmoji('↩️')
+                );
+
+            // Envoyer la confirmation au modérateur
+            await interaction.update({
+                embeds: [confirmEmbed],
+                components: [returnButton]
+            });
+
+            // Envoyer le rapport aux admins
+            try {
+                const config = await new Promise((resolve, reject) => {
+                    db.get('SELECT mod_role_id FROM guild_config WHERE guild_id = ?', 
+                        [interaction.guildId], 
+                        (err, row) => {
+                            if (err) reject(err);
+                            else resolve(row);
+                        }
+                    );
+                });
+
+                if (config?.mod_role_id) {
+                    const admins = interaction.guild.members.cache
+                        .filter(member => member.roles.cache.has(config.mod_role_id));
+
+                    for (const admin of admins.values()) {
+                        try {
+                            await admin.send({
+                                embeds: [reportEmbed],
+                                content: `🚨 Nouvelle action de modération dans ${interaction.guild.name}`
+                            });
+                        } catch (dmError) {
+                            console.error(`Impossible d'envoyer le DM à ${admin.user.tag}:`, dmError);
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('Erreur lors de l\'envoi des rapports aux admins:', error);
+            }
+
+            // Envoyer le rapport aux destinataires configurés
+            try {
+                // Récupérer tous les destinataires configurés
+                const rows = await new Promise((resolve, reject) => {
+                    db.all('SELECT user_id FROM report_recipients WHERE guild_id = ?', 
+                        [interaction.guildId], 
+                        (err, rows) => err ? reject(err) : resolve(rows)
+                    );
+                });
+
+                // Créer un Set pour éviter les doublons
+                const recipientIds = new Set(rows.map(row => row.user_id));
+
+                if (recipientIds.size > 0) {
+                    const failedRecipients = [];
+
+                    for (const userId of recipientIds) {
+                        try {
+                            const recipient = await client.users.fetch(userId);
+                            const dmChannel = await recipient.createDM();
+                            await dmChannel.send({ embeds: [reportEmbed] });
+                        } catch (error) {
+                            console.error(`Erreur lors de l'envoi du rapport à ${userId}:`, error);
+                            if (error.code === 50007) { // Cannot send messages to this user
+                                failedRecipients.push(userId);
+                                // Supprimer automatiquement le destinataire qui a bloqué les DMs
+                                try {
+                                    await new Promise((resolve, reject) => {
+                                        db.run('DELETE FROM report_recipients WHERE guild_id = ? AND user_id = ?',
+                                            [interaction.guildId, userId],
+                                            err => err ? reject(err) : resolve()
+                                        );
+                                    });
+                                } catch (dbError) {
+                                    console.error('Erreur lors de la suppression du destinataire:', dbError);
+                                }
+                            }
+                        }
+                    }
+
+                    // Si des destinataires ont échoué, informer l'administrateur
+                    if (failedRecipients.length > 0) {
+                        const errorEmbed = new EmbedBuilder()
+                            .setColor('#ff0000')
+                            .setTitle('⚠️ Erreur d\'Envoi des Rapports')
+                            .setDescription(
+                                `Impossible d'envoyer les rapports aux destinataires suivants car ils ont désactivé les DMs :\n` +
+                                failedRecipients.map(id => `<@${id}>`).join('\n') +
+                                '\n\nCes destinataires ont été automatiquement retirés de la liste.'
+                            )
+                            .setTimestamp();
+
+                        try {
+                            await interaction.followUp({
+                                embeds: [errorEmbed],
+                                ephemeral: true
+                            });
+                        } catch (followUpError) {
+                            console.error('Erreur lors de l\'envoi du message d\'erreur:', followUpError);
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('Erreur lors de la gestion des destinataires:', error);
+            }
+        } catch (error) {
+            console.error('Erreur lors du traitement du rapport:', error);
+            try {
+                await interaction.update({
+                    content: '❌ Une erreur s\'est produite lors de l\'enregistrement de l\'action. Veuillez réessayer.',
+                    ephemeral: true
+                });
+            } catch (replyError) {
+                console.error('Erreur lors de la réponse d\'erreur:', replyError);
+            }
+        }
+    }
+
+    // Retour au menu principal
+    else if (interaction.customId === 'return_dashboard') {
+        try {
+            const mainEmbed = new EmbedBuilder()
+                .setTitle('⭐ Quartier Général du Parti ⭐')
+                .setDescription(
+                    '**Camarade Commissaire, bienvenue au QG !**\n\n' +
+                    'Choisissez votre département :\n\n' +
+                    '⚔️ **Tribunal Révolutionnaire**\n' +
+                    '› Justice prolétarienne et discipline révolutionnaire\n\n' +
+                    '🎖️ **Ordre du Drapeau Rouge**\n' +
+                    '› Décorations et mérites des camarades\n\n' +
+                    '⭐ **Directives du Parti**\n' +
+                    '› Administration centrale du Parti'
+                )
+                .setColor('#CC0000')
+                .setFooter({ text: 'Prolétaires de tous les serveurs, unissez-vous !' });
+
+            const row = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('menu_justice')
+                        .setLabel('Tribunal Révolutionnaire')
+                        .setStyle(ButtonStyle.Danger)
+                        .setEmoji('⚔️'),
+                    new ButtonBuilder()
+                        .setCustomId('menu_medals')
+                        .setLabel('Ordre du Drapeau Rouge')
+                        .setStyle(ButtonStyle.Primary)
+                        .setEmoji('🎖️'),
+                    new ButtonBuilder()
+                        .setCustomId('menu_config')
+                        .setLabel('Directives du Parti')
+                        .setStyle(ButtonStyle.Secondary)
+                        .setEmoji('⭐')
+                );
+
+            await interaction.update({ embeds: [mainEmbed], components: [row] });
+        } catch (error) {
+            console.error('Erreur lors du retour au menu principal:', error);
+        }
+    }
+
+    // Menu configuration
+    else if (interaction.customId === 'menu_config') {
+        db.get(
+            'SELECT mod_role_id, leaderboard_channel_id, welcome_channel_id FROM guild_config WHERE guild_id = ?',
+            [interaction.guildId],
+            async (err, row) => {
+                if (err) {
+                    console.error('Erreur SQL:', err);
+                    return;
+                }
+
+                const currentModRole = row?.mod_role_id ? `<@&${row.mod_role_id}>` : 'Non assigné';
+                const currentChannel = row?.leaderboard_channel_id ? `<#${row.leaderboard_channel_id}>` : 'Non assigné';
+                const welcomeChannel = row?.welcome_channel_id ? `<#${row.welcome_channel_id}>` : 'Non assigné';
+
+                const row1 = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('config_mod_role')
+                            .setLabel('Garde Rouge')
+                            .setStyle(ButtonStyle.Danger)
+                            .setEmoji('👮'),
+                        new ButtonBuilder()
+                            .setCustomId('config_leaderboard')
+                            .setLabel('Canal de Propagande')
+                            .setStyle(ButtonStyle.Primary)
+                            .setEmoji('📢'),
+                        new ButtonBuilder()
+                            .setCustomId('config_welcome_channel')
+                            .setLabel('Canal d\'Accueil')
+                            .setStyle(ButtonStyle.Primary)
+                            .setEmoji('🚩'),
+                        new ButtonBuilder()
+                            .setCustomId('welcome_config')
+                            .setLabel('Message d\'Accueil')
+                            .setStyle(ButtonStyle.Primary)
+                            .setEmoji('📨')
+                    );
+
+                const row2 = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('config_recipients')
+                            .setLabel('Destinataires Rapports')
+                            .setStyle(ButtonStyle.Primary)
+                            .setEmoji('📬'),
+                        new ButtonBuilder()
+                            .setCustomId('return_dashboard')
+                            .setLabel('Retour')
+                            .setStyle(ButtonStyle.Secondary)
+                            .setEmoji('↩️')
+                    );
+
+                const embed = new EmbedBuilder()
+                    .setTitle('⚙️ Directives du Parti ⚙️')
+                    .setDescription(
+                        'Configuration actuelle :\n\n' +
+                        `👮 **Garde Rouge** - ${currentModRole}\n` +
+                        `📢 **Canal de Propagande** - ${currentChannel}\n` +
+                        `🚩 **Canal d'Accueil** - ${welcomeChannel}\n` +
+                        '📨 **Message d\'Accueil** - Message de bienvenue révolutionnaire'
+                    )
+                    .setColor('#CC0000')
+                    .setFooter({ text: 'Le Parti guide nos actions !' });
+
+                await interaction.update({ embeds: [embed], components: [row1, row2] });
+            }
+        );
     }
 
     // Sélection du rôle de modérateur
@@ -639,7 +1197,7 @@ client.on('interactionCreate', async interaction => {
             db.run(query, params, async function(err) {
                 if (err) {
                     console.error('Erreur SQL lors de la sauvegarde du rôle:', err);
-                    await interaction.reply({
+                    await interaction.update({
                         content: '❌ Une erreur s\'est produite lors de la configuration du rôle !',
                         ephemeral: true
                     });
@@ -666,23 +1224,10 @@ client.on('interactionCreate', async interaction => {
                             .setEmoji('↩️')
                     );
 
-                try {
-                    await interaction.update({ 
-                        embeds: [embed], 
-                        components: [returnButton]
-                    });
-                } catch (error) {
-                    console.error('Erreur lors de la mise à jour de l\'interaction:', error);
-                    if (error.code === 10062) {
-                        await interaction.reply({ 
-                            embeds: [embed], 
-                            components: [returnButton],
-                            ephemeral: true 
-                        });
-                    } else {
-                        throw error;
-                    }
-                }
+                await interaction.update({ 
+                    embeds: [embed], 
+                    components: [returnButton]
+                });
             });
         });
     }
@@ -691,55 +1236,18 @@ client.on('interactionCreate', async interaction => {
     else if (interaction.customId === 'select_leaderboard_channel') {
         const channelId = interaction.values[0];
         
-        // Récupérer la configuration existante
-        db.get('SELECT * FROM guild_config WHERE guild_id = ?', [interaction.guildId], (err, row) => {
-            if (err) {
-                console.error('Erreur lors de la vérification de la configuration:', err);
-                return;
-            }
-
-            let query;
-            let params;
-
-            if (row) {
-                // Mise à jour en préservant les autres valeurs
-                query = `UPDATE guild_config SET 
-                    leaderboard_channel_id = ?,
-                    mod_role_id = COALESCE(mod_role_id, ?),
-                    welcome_channel_id = COALESCE(welcome_channel_id, ?),
-                    welcome_title = COALESCE(welcome_title, ?),
-                    welcome_content = COALESCE(welcome_content, ?),
-                    welcome_image = COALESCE(welcome_image, ?)
-                    WHERE guild_id = ?`;
-                params = [
-                    channelId,
-                    row.mod_role_id,
-                    row.welcome_channel_id,
-                    row.welcome_title,
-                    row.welcome_content,
-                    row.welcome_image,
-                    interaction.guildId
-                ];
-            } else {
-                // Première insertion
-                query = `INSERT INTO guild_config (
-                    guild_id, 
-                    leaderboard_channel_id
-                ) VALUES (?, ?)`;
-                params = [interaction.guildId, channelId];
-            }
-
-            db.run(query, params, async function(err) {
+        db.run(
+            'INSERT OR REPLACE INTO guild_config (guild_id, leaderboard_channel_id) VALUES (?, ?)',
+            [interaction.guildId, channelId],
+            async err => {
                 if (err) {
-                    console.error('Erreur SQL lors de la sauvegarde du canal:', err);
-                    await interaction.reply({
+                    console.error('Erreur SQL:', err);
+                    await interaction.update({
                         content: '❌ Une erreur s\'est produite lors de la configuration du canal !',
                         ephemeral: true
                     });
                     return;
                 }
-
-                console.log(`Configuration sauvegardée - Guild: ${interaction.guildId}, Channel: ${channelId}, Changes: ${this.changes}`);
 
                 const embed = new EmbedBuilder()
                     .setTitle('✅ Canal de Propagande Configuré')
@@ -759,334 +1267,30 @@ client.on('interactionCreate', async interaction => {
                             .setEmoji('↩️')
                     );
 
-                try {
-                    await interaction.update({ 
-                        embeds: [embed], 
-                        components: [returnButton]
-                    });
-                } catch (error) {
-                    if (error.code === 10062) {
-                        await interaction.reply({ 
-                            embeds: [embed], 
-                            components: [returnButton],
-                            ephemeral: true 
-                        });
-                    } else {
-                        throw error;
-                    }
-                }
-            });
-        });
-    }
-
-    // Menu Stats
-    else if (interaction.customId === 'menu_stats') {
-        db.get(
-            'SELECT xp, weekly_xp FROM mod_xp WHERE user_id = ? AND guild_id = ?',
-            [interaction.user.id, interaction.guildId],
-            async (err, row) => {
-                const xp = row ? row.xp : 0;
-                const weeklyXp = row ? row.weekly_xp : 0;
-
-                const row1 = new ActionRowBuilder()
-                    .addComponents(
-                        new ButtonBuilder()
-                            .setCustomId('stats_leaderboard')
-                            .setLabel('Tableau d\'Honneur')
-                            .setStyle(ButtonStyle.Primary)
-                            .setEmoji('🏆'),
-                        new ButtonBuilder()
-                            .setCustomId('return_dashboard')
-                            .setLabel('Retour')
-                            .setStyle(ButtonStyle.Secondary)
-                            .setEmoji('↩️')
-                    );
-
-                const embed = new EmbedBuilder()
-                    .setTitle('🎖️ États de Service du Camarade 🎖️')
-                    .setDescription(
-                        `**Points de Mérite Total :** ${xp} PMR\n` +
-                        `**Cette Semaine :** ${weeklyXp} PMR\n\n` +
-                        '_"De chacun selon ses capacités, à chacun selon ses mérites."_'
-                    )
-                    .setColor('#CC0000')
-                    .setFooter({ text: 'PMR = Points de Mérite Révolutionnaire' });
-
-                await interaction.update({ embeds: [embed], components: [row1] });
+                await interaction.update({ 
+                    embeds: [embed], 
+                    components: [returnButton]
+                });
             }
         );
-    }
-
-    // Menu Actions
-    else if (interaction.customId === 'menu_mod') {
-        const isMod = await isModerateur(interaction.member);
-        if (!isMod) {
-            await interaction.reply({ 
-                content: '❌ Camarade, seuls les Gardes Rouges peuvent accéder aux actions !', 
-                ephemeral: true 
-            });
-            return;
-        }
-
-        // Créer le menu de sélection d'utilisateur
-        const members = await interaction.guild.members.fetch();
-        const memberOptions = members
-            .filter(member => !member.user.bot)
-            .map(member => ({
-                label: member.user.username,
-                value: member.id,
-                description: member.nickname || 'Camarade du Serveur'
-            }))
-            .slice(0, 25);
-
-        const row = new ActionRowBuilder()
-            .addComponents(
-                new StringSelectMenuBuilder()
-                    .setCustomId('select_user')
-                    .setPlaceholder('Sélectionner un camarade')
-                    .addOptions(memberOptions)
-            );
-
-        const row2 = new ActionRowBuilder()
-            .addComponents(
-                new ButtonBuilder()
-                    .setCustomId('return_dashboard')
-                    .setLabel('Retour')
-                    .setStyle(ButtonStyle.Secondary)
-                    .setEmoji('↩️')
-            );
-
-        const embed = new EmbedBuilder()
-            .setTitle('☭ Bureau du Comité de Modération ☭')
-            .setDescription(
-                '1. Sélectionnez un camarade à rééduquer\n' +
-                '2. Choisissez les mesures disciplinaires\n' +
-                '3. Validez pour la gloire du Parti'
-            )
-            .setColor('#CC0000')
-            .setFooter({ text: 'La justice du Parti est implacable !' });
-
-        await interaction.update({ embeds: [embed], components: [row, row2] });
-    }
-
-    // Configuration du rôle de modérateur
-    else if (interaction.customId === 'config_mod_role') {
-        const roles = interaction.guild.roles.cache
-            .filter(role => role.id !== interaction.guild.id) // Exclure le rôle @everyone
-            .sort((a, b) => b.position - a.position) // Trier par position (plus haut en premier)
-            .first(25);
-
-        const row = new ActionRowBuilder()
-            .addComponents(
-                new StringSelectMenuBuilder()
-                    .setCustomId('select_mod_role')
-                    .setPlaceholder('Sélectionner le rôle de Garde Rouge')
-                    .addOptions(
-                        roles.map(role => ({
-                            label: role.name,
-                            value: role.id,
-                            emoji: '👮'
-                        }))
-                    )
-            );
-
-        const embed = new EmbedBuilder()
-            .setTitle('👮 Configuration de la Garde Rouge')
-            .setDescription(
-                'Sélectionnez le rôle qui aura les privilèges de modération.\n\n' +
-                '_Ces camarades seront les gardiens de l\'ordre révolutionnaire._'
-            )
-            .setColor('#CC0000')
-            .setFooter({ text: 'Pour la gloire de la Révolution !' });
-
-        await interaction.update({ embeds: [embed], components: [row] });
-    }
-
-    // Sélection du rôle de modérateur
-    else if (interaction.customId === 'select_mod_role') {
-        const roleId = interaction.values[0];
-        
-        // Vérifier si une configuration existe déjà
-        db.get('SELECT * FROM guild_config WHERE guild_id = ?', [interaction.guildId], (err, row) => {
-            if (err) {
-                console.error('Erreur lors de la vérification de la configuration:', err);
-                return;
-            }
-
-            const query = row 
-                ? 'UPDATE guild_config SET mod_role_id = ? WHERE guild_id = ?'
-                : 'INSERT INTO guild_config (mod_role_id, guild_id) VALUES (?, ?)';
-            
-            const params = row ? [roleId, interaction.guildId] : [roleId, interaction.guildId];
-
-            db.run(query, params, async function(err) {
-                if (err) {
-                    console.error('Erreur SQL lors de la sauvegarde du rôle:', err);
-                    await interaction.reply({
-                        content: '❌ Une erreur s\'est produite lors de la configuration du rôle !',
-                        ephemeral: true
-                    });
-                    return;
-                }
-
-                console.log(`Configuration sauvegardée - Guild: ${interaction.guildId}, Role: ${roleId}, Changes: ${this.changes}`);
-
-                const embed = new EmbedBuilder()
-                    .setTitle('✅ Garde Rouge Configurée')
-                    .setDescription(
-                        `Le rôle ${interaction.guild.roles.cache.get(roleId)} a été promu Garde Rouge.\n\n` +
-                        '_Ces camarades veilleront à la bonne application des directives du Parti !_'
-                    )
-                    .setColor('#CC0000')
-                    .setFooter({ text: 'Configuration terminée' });
-
-                const returnButton = new ActionRowBuilder()
-                    .addComponents(
-                        new ButtonBuilder()
-                            .setCustomId('menu_config')
-                            .setLabel('Retour aux Directives')
-                            .setStyle(ButtonStyle.Secondary)
-                            .setEmoji('↩️')
-                    );
-
-                try {
-                    await interaction.update({ 
-                        embeds: [embed], 
-                        components: [returnButton]
-                    });
-                } catch (error) {
-                    console.error('Erreur lors de la mise à jour de l\'interaction:', error);
-                    if (error.code === 10008) {
-                        await interaction.reply({ 
-                            embeds: [embed], 
-                            components: [returnButton],
-                            ephemeral: true 
-                        });
-                    } else {
-                        throw error;
-                    }
-                }
-            });
-        });
-    }
-
-    // Configuration du canal
-    else if (interaction.customId === 'config_leaderboard') {
-        const channels = interaction.guild.channels.cache
-            .filter(ch => ch.type === ChannelType.GuildText)
-            .first(25);
-
-        const row = new ActionRowBuilder()
-            .addComponents(
-                new StringSelectMenuBuilder()
-                    .setCustomId('select_leaderboard_channel')
-                    .setPlaceholder('Sélectionner le canal de propagande')
-                    .addOptions(
-                        channels.map(channel => ({
-                            label: channel.name,
-                            value: channel.id,
-                            emoji: '📢'
-                        }))
-                    )
-            );
-
-        const embed = new EmbedBuilder()
-            .setTitle('📢 Configuration du Canal de Propagande')
-            .setDescription(
-                'Sélectionnez le canal où seront publiés les tableaux d\'honneur.\n\n' +
-                '_Le Parti y célébrera les exploits de ses plus fidèles serviteurs._'
-            )
-            .setColor('#CC0000')
-            .setFooter({ text: 'Pour la gloire de la Révolution !' });
-
-        await interaction.update({ embeds: [embed], components: [row] });
-    }
-
-    // Configuration du salon de bienvenue
-    else if (interaction.customId === 'config_welcome_channel') {
-        const channels = interaction.guild.channels.cache
-            .filter(ch => ch.type === ChannelType.GuildText)
-            .first(25);
-
-        const row = new ActionRowBuilder()
-            .addComponents(
-                new StringSelectMenuBuilder()
-                    .setCustomId('select_welcome_channel')
-                    .setPlaceholder('Sélectionner le canal d\'accueil')
-                    .addOptions(
-                        channels.map(channel => ({
-                            label: channel.name,
-                            value: channel.id,
-                            emoji: '🚩'
-                        }))
-                    )
-            );
-
-        const embed = new EmbedBuilder()
-            .setTitle('🚩 Configuration du Canal d\'Accueil')
-            .setDescription(
-                'Sélectionnez le canal où seront envoyés les messages de bienvenue.\n\n' +
-                '_Le Parti accueillera les nouveaux camarades dans ce canal._'
-            )
-            .setColor('#CC0000')
-            .setFooter({ text: 'Pour la gloire de la Révolution !' });
-
-        await interaction.update({ embeds: [embed], components: [row] });
     }
 
     // Sélection du salon de bienvenue
     else if (interaction.customId === 'select_welcome_channel') {
         const channelId = interaction.values[0];
         
-        // Récupérer la configuration existante
-        db.get('SELECT * FROM guild_config WHERE guild_id = ?', [interaction.guildId], (err, row) => {
-            if (err) {
-                console.error('Erreur lors de la vérification de la configuration:', err);
-                return;
-            }
-
-            let query;
-            let params;
-
-            if (row) {
-                // Mise à jour en préservant les autres valeurs
-                query = `UPDATE guild_config SET 
-                    welcome_channel_id = ?,
-                    mod_role_id = COALESCE(mod_role_id, ?),
-                    leaderboard_channel_id = COALESCE(leaderboard_channel_id, ?),
-                    welcome_title = COALESCE(welcome_title, ?),
-                    welcome_content = COALESCE(welcome_content, ?),
-                    welcome_image = COALESCE(welcome_image, ?)
-                    WHERE guild_id = ?`;
-                params = [
-                    channelId,
-                    row.mod_role_id,
-                    row.leaderboard_channel_id,
-                    row.welcome_title,
-                    row.welcome_content,
-                    row.welcome_image,
-                    interaction.guildId
-                ];
-            } else {
-                // Première insertion
-                query = `INSERT INTO guild_config (
-                    guild_id, 
-                    welcome_channel_id
-                ) VALUES (?, ?)`;
-                params = [interaction.guildId, channelId];
-            }
-
-            db.run(query, params, async function(err) {
+        db.run(
+            'INSERT OR REPLACE INTO guild_config (guild_id, welcome_channel_id) VALUES (?, ?)',
+            [interaction.guildId, channelId],
+            async err => {
                 if (err) {
-                    console.error('Erreur SQL lors de la sauvegarde du canal:', err);
-                    await interaction.reply({
+                    console.error('Erreur SQL:', err);
+                    await interaction.update({
                         content: '❌ Une erreur s\'est produite lors de la configuration du canal !',
                         ephemeral: true
                     });
                     return;
                 }
-
-                console.log(`Configuration sauvegardée - Guild: ${interaction.guildId}, Welcome Channel: ${channelId}, Changes: ${this.changes}`);
 
                 const embed = new EmbedBuilder()
                     .setTitle('✅ Canal d\'Accueil Configuré')
@@ -1106,77 +1310,10 @@ client.on('interactionCreate', async interaction => {
                             .setEmoji('↩️')
                     );
 
-                try {
-                    await interaction.update({ 
-                        embeds: [embed], 
-                        components: [returnButton]
-                    });
-                } catch (error) {
-                    if (error.code === 10062) {
-                        await interaction.reply({ 
-                            embeds: [embed], 
-                            components: [returnButton],
-                            ephemeral: true 
-                        });
-                    } else {
-                        throw error;
-                    }
-                }
-            });
-        });
-    }
-
-    // Sélection du canal de tableau d'honneur
-    else if (interaction.customId === 'select_leaderboard_channel') {
-        const channelId = interaction.values[0];
-        
-        db.run(
-            'INSERT OR REPLACE INTO guild_config (guild_id, leaderboard_channel_id) VALUES (?, ?)',
-            [interaction.guildId, channelId],
-            async err => {
-                if (err) {
-                    console.error('Erreur SQL:', err);
-                    await interaction.reply({
-                        content: '❌ Une erreur s\'est produite lors de la configuration du canal !',
-                        ephemeral: true
-                    });
-                    return;
-                }
-
-                const embed = new EmbedBuilder()
-                    .setTitle('✅ Canal de Propagande Configuré')
-                    .setDescription(
-                        `Les tableaux d'honneur seront désormais publiés dans ${interaction.guild.channels.cache.get(channelId)}.\n\n` +
-                        '_Le Parti se réjouit de pouvoir célébrer ses héros dans ce canal !_'
-                    )
-                    .setColor('#CC0000')
-                    .setFooter({ text: 'Configuration terminée' });
-
-                const returnButton = new ActionRowBuilder()
-                    .addComponents(
-                        new ButtonBuilder()
-                            .setCustomId('menu_config')
-                            .setLabel('Retour aux Directives')
-                            .setStyle(ButtonStyle.Secondary)
-                            .setEmoji('↩️')
-                    );
-
-                try {
-                    await interaction.update({ 
-                        embeds: [embed], 
-                        components: [returnButton]
-                    });
-                } catch (error) {
-                    if (error.code === 10008) { // Unknown Message error
-                        await interaction.reply({ 
-                            embeds: [embed], 
-                            components: [returnButton],
-                            ephemeral: true 
-                        });
-                    } else {
-                        throw error;
-                    }
-                }
+                await interaction.update({ 
+                    embeds: [embed], 
+                    components: [returnButton]
+                });
             }
         );
     }
@@ -1252,7 +1389,7 @@ client.on('interactionCreate', async interaction => {
             await interaction.showModal(modal);
         } catch (error) {
             console.error('Erreur lors de l\'affichage du modal:', error);
-            await interaction.reply({ 
+            await interaction.update({ 
                 content: '❌ Une erreur s\'est produite lors de l\'affichage du formulaire !', 
                 ephemeral: true 
             });
@@ -1276,7 +1413,7 @@ client.on('interactionCreate', async interaction => {
             `, [interaction.guildId, title, content], async (err) => {
                 if (err) {
                     console.error('Erreur SQL:', err);
-                    await interaction.reply({ 
+                    await interaction.update({ 
                         content: '❌ Une erreur s\'est produite lors de la sauvegarde !', 
                         ephemeral: true 
                     });
@@ -1321,15 +1458,14 @@ client.on('interactionCreate', async interaction => {
                     .setColor('#CC0000')
                     .setFooter({ text: 'Utilisez le bouton "Tester" pour voir le résultat final' });
 
-                await interaction.reply({ 
+                await interaction.update({ 
                     embeds: [embed], 
-                    components: [row],
-                    ephemeral: true 
+                    components: [row]
                 });
             });
         } catch (error) {
             console.error('Erreur lors du traitement du modal:', error);
-            await interaction.reply({ 
+            await interaction.update({ 
                 content: '❌ Une erreur s\'est produite lors du traitement du formulaire !', 
                 ephemeral: true 
             });
@@ -1365,7 +1501,7 @@ client.on('interactionCreate', async interaction => {
             (err, row) => {
                 if (err) {
                     console.error('Erreur SQL:', err);
-                    interaction.reply({ 
+                    interaction.update({ 
                         content: '❌ Une erreur s\'est produite !', 
                         ephemeral: true 
                     });
@@ -1380,7 +1516,7 @@ client.on('interactionCreate', async interaction => {
                         async (err) => {
                             if (err) {
                                 console.error('Erreur SQL:', err);
-                                await interaction.reply({ 
+                                await interaction.update({ 
                                     content: '❌ Une erreur s\'est produite !', 
                                     ephemeral: true 
                                 });
@@ -1392,7 +1528,7 @@ client.on('interactionCreate', async interaction => {
                                 .setDescription('L\'image a été enregistrée avec succès !')
                                 .setColor('#CC0000');
 
-                            await interaction.reply({ embeds: [embed], ephemeral: true });
+                            await interaction.update({ embeds: [embed] });
                         }
                     );
                 } else {
@@ -1403,7 +1539,7 @@ client.on('interactionCreate', async interaction => {
                         async (err) => {
                             if (err) {
                                 console.error('Erreur SQL:', err);
-                                await interaction.reply({ 
+                                await interaction.update({ 
                                     content: '❌ Une erreur s\'est produite !', 
                                     ephemeral: true 
                                 });
@@ -1415,7 +1551,7 @@ client.on('interactionCreate', async interaction => {
                                 .setDescription('L\'image a été enregistrée avec succès !')
                                 .setColor('#CC0000');
 
-                            await interaction.reply({ embeds: [embed], ephemeral: true });
+                            await interaction.update({ embeds: [embed] });
                         }
                     );
                 }
@@ -1430,21 +1566,21 @@ client.on('interactionCreate', async interaction => {
             [interaction.guildId],
             async (err, row) => {
                 if (err || !row) {
-                    await interaction.reply({ 
+                    await interaction.update({ 
                         content: '❌ Aucune configuration trouvée !', 
                         ephemeral: true 
                     });
                     return;
                 }
 
-                const title = row.welcome_title?.replace('{user}', interaction.user)
+                const title = (row.welcome_title?.replace('{user}', interaction.user)
                     .replace('{server}', interaction.guild.name)
-                    .replace('{memberCount}', interaction.guild.memberCount) || 'Bienvenue Camarade ✋';
+                    .replace('{memberCount}', interaction.guild.memberCount) || 'Bienvenue Camarade ✋');
 
-                const content = row.welcome_content?.replace('{user}', interaction.user)
+                const content = (row.welcome_content?.replace('{user}', interaction.user)
                     .replace('{server}', interaction.guild.name)
                     .replace('{memberCount}', interaction.guild.memberCount) ||
-                    `Un nouveau camarade ${interaction.user} rejoint notre révolution !`;
+                    `Un nouveau camarade ${interaction.user} rejoint notre révolution !`);
 
                 const embed = new EmbedBuilder()
                     .setTitle(title)
@@ -1455,7 +1591,7 @@ client.on('interactionCreate', async interaction => {
                     embed.setImage(row.welcome_image);
                 }
 
-                await interaction.reply({ 
+                await interaction.update({ 
                     content: '📝 Prévisualisation du message de bienvenue :', 
                     embeds: [embed], 
                     ephemeral: true 
@@ -1488,19 +1624,16 @@ client.on('interactionCreate', async interaction => {
         const mainEmbed = new EmbedBuilder()
             .setTitle('☭ Bureau Politique du Parti ☭')
             .setDescription(
-                'Bienvenue, Camarade ! Le Parti vous salue !\n\n' +
-                '⚔️ **Justice du Parti** - Faire respecter la discipline révolutionnaire\n' +
-                '🎖️ **Médailles du Mérite** - Honorer les services rendus au Parti\n' +
-                '⚙️ **Directives du Parti** - Appliquer la ligne politique'
+                'Bienvenue au Bureau Politique, Camarade.\n\n' +
+                'Sélectionnez votre département :\n\n' +
+                '🛡️ **Justice du Parti** - Gestion de la modération\n' +
+                '📊 **Médailles du Mérite** - Statistiques et XP\n' +
+                '⚙️ **Directives du Parti** - Configuration'
             )
             .setColor('#CC0000')
             .setFooter({ text: 'Pour la gloire de la Révolution !' });
 
-        try {
-            await interaction.update({ embeds: [mainEmbed], components: [mainRow] });
-        } catch (error) {
-            console.error('Erreur lors du retour au menu principal:', error);
-        }
+        await interaction.update({ embeds: [mainEmbed], components: [mainRow] });
     }
 
     // Traitement des modaux de configuration
@@ -1513,9 +1646,9 @@ client.on('interactionCreate', async interaction => {
                 [interaction.guildId, roleId, roleId],
                 async (err) => {
                     if (err) {
-                        await interaction.reply({ 
-                            content: '❌ Une erreur s\'est produite !', 
-                            ephemeral: true 
+                        await interaction.update({
+                            content: '❌ Une erreur s\'est produite !',
+                            ephemeral: true
                         });
                         return;
                     }
@@ -1525,7 +1658,7 @@ client.on('interactionCreate', async interaction => {
                         .setDescription(`Le rôle Garde Rouge a été défini avec l'ID: ${roleId}`)
                         .setColor('#CC0000');
 
-                    await interaction.reply({ embeds: [embed], ephemeral: true });
+                    await interaction.update({ embeds: [embed] });
                 }
             );
         }
@@ -1537,9 +1670,9 @@ client.on('interactionCreate', async interaction => {
                 [interaction.guildId, channelId, channelId],
                 async (err) => {
                     if (err) {
-                        await interaction.reply({ 
-                            content: '❌ Une erreur s\'est produite !', 
-                            ephemeral: true 
+                        await interaction.update({
+                            content: '❌ Une erreur s\'est produite !',
+                            ephemeral: true
                         });
                         return;
                     }
@@ -1549,7 +1682,7 @@ client.on('interactionCreate', async interaction => {
                         .setDescription(`Le Canal des Héros a été défini avec l'ID: ${channelId}`)
                         .setColor('#CC0000');
 
-                    await interaction.reply({ embeds: [embed], ephemeral: true });
+                    await interaction.update({ embeds: [embed] });
                 }
             );
         }
@@ -1654,9 +1787,9 @@ client.on('interactionCreate', async interaction => {
         const weekNumber = getWeekNumber();
 
         if (actions.length === 0) {
-            await interaction.reply({ 
-                content: '❌ Camarade, aucune sanction n\'a été sélectionnée !', 
-                ephemeral: true 
+            await interaction.update({
+                content: '❌ Camarade, aucune sanction n\'a été sélectionnée !',
+                ephemeral: true
             });
             return;
         }
@@ -1672,7 +1805,7 @@ client.on('interactionCreate', async interaction => {
         };
 
         for (const action of actions) {
-            const xp = CONFIG.XP_ACTIONS[action.toUpperCase()];
+            const xp = CONFIG.ACTIONS[action.toUpperCase()].xp;
             totalXp += xp;
 
             // Ajouter les XP
@@ -1769,9 +1902,9 @@ client.on('interactionCreate', async interaction => {
             LIMIT 10
         `, [interaction.guildId], async (err, rows) => {
             if (err) {
-                await interaction.reply({ 
-                    content: '❌ Une erreur s\'est produite !', 
-                    ephemeral: true 
+                await interaction.update({
+                    content: '❌ Une erreur s\'est produite !',
+                    ephemeral: true
                 });
                 return;
             }
@@ -1829,8 +1962,8 @@ client.on('interactionCreate', async interaction => {
                 const embed = new EmbedBuilder()
                     .setTitle('🎖️ États de Service du Camarade 🎖️')
                     .setDescription(
-                        `**Points de Mérite Total :** ${xp} PMR\n` +
-                        `**Cette Semaine :** ${weeklyXp} PMR\n\n` +
+                        `**Points de Mérite Total :** ${xp}\n` +
+                        `**Cette Semaine :** ${weeklyXp}\n\n` +
                         '_"De chacun selon ses capacités, à chacun selon ses mérites."_'
                     )
                     .setColor('#CC0000')
@@ -1839,6 +1972,352 @@ client.on('interactionCreate', async interaction => {
                 await interaction.update({ embeds: [embed], components: [row1] });
             }
         );
+    }
+
+    // Gestion des destinataires
+    else if (interaction.customId === 'config_recipients') {
+        if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+            await interaction.update({
+                content: '❌ Seuls les administrateurs peuvent configurer les destinataires des rapports.',
+                ephemeral: true,
+                components: []
+            });
+            return;
+        }
+
+        try {
+            const rows = await new Promise((resolve, reject) => {
+                db.all('SELECT user_id FROM report_recipients WHERE guild_id = ?', [interaction.guildId], (err, rows) => {
+                    if (err) reject(err);
+                    else resolve(rows);
+                });
+            });
+
+            const recipientsEmbed = new EmbedBuilder()
+                .setColor('#ff0000')
+                .setTitle('📬 Liste des Destinataires des Rapports')
+                .setDescription(rows.length > 0 
+                    ? rows.map(row => `<@${row.user_id}>`).join('\n')
+                    : 'Aucun destinataire configuré');
+
+            const row = new ActionRowBuilder()
+                .addComponents(
+                    new UserSelectMenuBuilder()
+                        .setCustomId('select_recipient')
+                        .setPlaceholder('Sélectionner un destinataire')
+                        .setMinValues(1)
+                        .setMaxValues(1)
+                );
+
+            const buttonRow = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('view_recipients')
+                        .setLabel('Voir les Destinataires')
+                        .setStyle(ButtonStyle.Secondary)
+                        .setEmoji('👥'),
+                    new ButtonBuilder()
+                        .setCustomId('remove_recipients')
+                        .setLabel('Retirer des Destinataires')
+                        .setStyle(ButtonStyle.Danger)
+                        .setEmoji('🗑️'),
+                    new ButtonBuilder()
+                        .setCustomId('return_config')
+                        .setLabel('Retour')
+                        .setStyle(ButtonStyle.Secondary)
+                        .setEmoji('↩️')
+                );
+
+            await interaction.update({ embeds: [recipientsEmbed], components: [row, buttonRow], ephemeral: true });
+        } catch (error) {
+            console.error('Erreur lors de la récupération des destinataires:', error);
+            await interaction.update({
+                content: '❌ Une erreur s\'est produite lors de la récupération des destinataires.',
+                ephemeral: true,
+                components: []
+            });
+        }
+    }
+
+    // Gestion de la sélection d'un destinataire
+    else if (interaction.customId === 'select_recipient') {
+        if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+            await interaction.update({
+                content: '❌ Seuls les administrateurs peuvent ajouter des destinataires.',
+                ephemeral: true,
+                components: []
+            });
+            return;
+        }
+
+        const userId = interaction.values[0];
+        
+        try {
+            await new Promise((resolve, reject) => {
+                db.run('INSERT OR IGNORE INTO report_recipients (guild_id, user_id) VALUES (?, ?)',
+                    [interaction.guildId, userId],
+                    err => err ? reject(err) : resolve()
+                );
+            });
+
+            const returnButton = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('config_recipients')
+                        .setLabel('Retour aux Destinataires')
+                        .setStyle(ButtonStyle.Secondary)
+                        .setEmoji('↩️')
+                );
+
+            const successEmbed = new EmbedBuilder()
+                .setColor('#00ff00')
+                .setTitle('✅ Destinataire Ajouté')
+                .setDescription(`<@${userId}> recevra désormais les rapports de modération.`)
+                .setTimestamp();
+
+            await interaction.update({
+                embeds: [successEmbed],
+                components: [returnButton],
+                ephemeral: true
+            });
+
+        } catch (error) {
+            console.error('Erreur lors de l\'ajout du destinataire:', error);
+            await interaction.update({
+                content: '❌ Une erreur s\'est produite lors de l\'ajout du destinataire.',
+                ephemeral: true,
+                components: []
+            });
+        }
+    }
+
+    // Afficher les destinataires actuels
+    else if (interaction.customId === 'view_recipients') {
+        if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+            await interaction.update({
+                content: '❌ Seuls les administrateurs peuvent voir la liste des destinataires.',
+                ephemeral: true,
+                components: []
+            });
+            return;
+        }
+
+        try {
+            const rows = await new Promise((resolve, reject) => {
+                db.all('SELECT user_id FROM report_recipients WHERE guild_id = ?', [interaction.guildId], (err, rows) => {
+                    if (err) reject(err);
+                    else resolve(rows);
+                });
+            });
+
+            const recipientsEmbed = new EmbedBuilder()
+                .setColor('#ff0000')
+                .setTitle('📬 Liste des Destinataires des Rapports')
+                .setDescription(rows.length > 0 
+                    ? rows.map(row => `<@${row.user_id}>`).join('\n')
+                    : 'Aucun destinataire configuré');
+
+            const returnButton = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('config_recipients')
+                        .setLabel('Retour aux Destinataires')
+                        .setStyle(ButtonStyle.Secondary)
+                        .setEmoji('↩️')
+                );
+
+            await interaction.update({ 
+                embeds: [recipientsEmbed], 
+                components: [returnButton], 
+                ephemeral: true 
+            });
+        } catch (error) {
+            console.error('Erreur lors de la récupération des destinataires:', error);
+            await interaction.update({
+                content: '❌ Une erreur s\'est produite lors de la récupération des destinataires.',
+                ephemeral: true,
+                components: []
+            });
+        }
+    }
+
+    // Retirer des destinataires
+    else if (interaction.customId === 'remove_recipients') {
+        if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+            await interaction.update({
+                content: '❌ Seuls les administrateurs peuvent retirer des destinataires.',
+                ephemeral: true,
+                components: []
+            });
+            return;
+        }
+
+        try {
+            const rows = await new Promise((resolve, reject) => {
+                db.all('SELECT user_id FROM report_recipients WHERE guild_id = ?', [interaction.guildId], (err, rows) => {
+                    if (err) reject(err);
+                    else resolve(rows);
+                });
+            });
+
+            if (rows.length === 0) {
+                const returnButton = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('config_recipients')
+                            .setLabel('Retour aux Destinataires')
+                            .setStyle(ButtonStyle.Secondary)
+                            .setEmoji('↩️')
+                    );
+
+                const emptyEmbed = new EmbedBuilder()
+                    .setColor('#ff0000')
+                    .setTitle('❌ Aucun Destinataire')
+                    .setDescription('Il n\'y a actuellement aucun destinataire configuré.');
+
+                await interaction.update({
+                    embeds: [emptyEmbed],
+                    components: [returnButton],
+                    ephemeral: true
+                });
+                return;
+            }
+
+            const row = new ActionRowBuilder()
+                .addComponents(
+                    new UserSelectMenuBuilder()
+                        .setCustomId('remove_recipient')
+                        .setPlaceholder('Sélectionner un destinataire à retirer')
+                );
+
+            const returnButton = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('config_recipients')
+                        .setLabel('Retour aux Destinataires')
+                        .setStyle(ButtonStyle.Secondary)
+                        .setEmoji('↩️')
+                );
+
+            const removeEmbed = new EmbedBuilder()
+                .setColor('#ff0000')
+                .setTitle('🗑️ Retirer un Destinataire')
+                .setDescription('Sélectionnez le destinataire que vous souhaitez retirer de la liste.');
+
+            await interaction.update({
+                embeds: [removeEmbed],
+                components: [row, returnButton],
+                ephemeral: true
+            });
+
+        } catch (error) {
+            console.error('Erreur lors de la récupération des destinataires:', error);
+            await interaction.update({
+                content: '❌ Une erreur s\'est produite lors de la récupération des destinataires.',
+                ephemeral: true,
+                components: []
+            });
+        }
+    }
+
+    // Retirer un destinataire spécifique
+    else if (interaction.customId === 'remove_recipient') {
+        if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+            await interaction.update({
+                content: '❌ Seuls les administrateurs peuvent retirer des destinataires.',
+                ephemeral: true,
+                components: []
+            });
+            return;
+        }
+
+        const userId = interaction.values[0];
+        
+        try {
+            await new Promise((resolve, reject) => {
+                db.run('DELETE FROM report_recipients WHERE guild_id = ? AND user_id = ?',
+                    [interaction.guildId, userId],
+                    err => err ? reject(err) : resolve()
+                );
+            });
+
+            const returnButton = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('config_recipients')
+                        .setLabel('Retour aux Destinataires')
+                        .setStyle(ButtonStyle.Secondary)
+                        .setEmoji('↩️')
+                );
+
+            const successEmbed = new EmbedBuilder()
+                .setColor('#00ff00')
+                .setTitle('✅ Destinataire Retiré')
+                .setDescription(`<@${userId}> ne recevra plus les rapports de modération.`)
+                .setTimestamp();
+
+            await interaction.update({
+                embeds: [successEmbed],
+                components: [returnButton],
+                ephemeral: true
+            });
+
+        } catch (error) {
+            console.error('Erreur lors du retrait du destinataire:', error);
+            await interaction.update({
+                content: '❌ Une erreur s\'est produite lors du retrait du destinataire.',
+                ephemeral: true,
+                components: []
+            });
+        }
+    }
+
+    // Retour au menu de configuration
+    else if (interaction.customId === 'return_config') {
+        try {
+            const configRow = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('config_recipients')
+                        .setLabel('Configurer les Destinataires')
+                        .setStyle(ButtonStyle.Primary)
+                        .setEmoji('📬'),
+                    new ButtonBuilder()
+                        .setCustomId('select_mod_role')
+                        .setLabel('Rôle Modérateur')
+                        .setStyle(ButtonStyle.Secondary)
+                        .setEmoji('👮'),
+                    new ButtonBuilder()
+                        .setCustomId('welcome_config')
+                        .setLabel('Message de Bienvenue')
+                        .setStyle(ButtonStyle.Secondary)
+                        .setEmoji('👋'),
+                    new ButtonBuilder()
+                        .setCustomId('return_dashboard')
+                        .setLabel('Retour au Tableau de Bord')
+                        .setStyle(ButtonStyle.Secondary)
+                        .setEmoji('↩️')
+                );
+
+            const configEmbed = new EmbedBuilder()
+                .setColor('#ff0000')
+                .setTitle('⚙️ Configuration du Serveur')
+                .setDescription('Sélectionnez une option de configuration :')
+                .setTimestamp();
+
+            await interaction.update({
+                embeds: [configEmbed],
+                components: [configRow],
+                ephemeral: true
+            });
+        } catch (error) {
+            console.error('Erreur lors du retour au menu de configuration:', error);
+            await interaction.update({
+                content: '❌ Une erreur s\'est produite. Veuillez réessayer.',
+                ephemeral: true,
+                components: []
+            });
+        }
     }
 });
 
@@ -1852,7 +2331,7 @@ client.on('messageCreate', async message => {
     const now = Date.now();
     const lastMessage = messageCooldowns.get(message.author.id);
     
-    if (lastMessage && (now - lastMessage) < CONFIG.COOLDOWN_MESSAGE) return;
+    if (lastMessage && (now - lastMessage) < CONFIG.COOLDOWN) return;
     
     messageCooldowns.set(message.author.id, now);
 
@@ -1878,17 +2357,21 @@ client.on('guildMemberAdd', async member => {
             );
         });
 
+        // S'assurer que le cache des membres est à jour
+        await member.guild.members.fetch();
+        const memberCount = member.guild.memberCount;
+
         // Préparer le titre et le contenu
         const title = (configRow?.welcome_title || `☭ Bienvenue au Parti, Camarade {user} ! ☭`)
             .replace('{user}', member.user.username)
             .replace('{server}', member.guild.name)
-            .replace('{memberCount}', member.guild.memberCount);
+            .replace('{memberCount}', memberCount);
 
         const content = (configRow?.welcome_content || 
             `Le Parti accueille chaleureusement {user} dans nos rangs !\nTu es notre {memberCount}ème camarade.`)
             .replace('{user}', `<@${member.id}>`)
             .replace('{server}', member.guild.name)
-            .replace('{memberCount}', member.guild.memberCount);
+            .replace('{memberCount}', memberCount);
 
         // Créer l'embed
         const welcomeEmbed = new EmbedBuilder()
@@ -1951,3 +2434,32 @@ client.on('guildMemberAdd', async member => {
 });
 
 client.login(process.env.TOKEN);
+
+// Fonction pour formater le top 50
+async function formatTop5(guild, rankings, field) {
+    const top50 = rankings
+        .sort((a, b) => b[field] - a[field])
+        .slice(0, 50);
+
+    let result = '';
+    for (let i = 0; i < top50.length; i++) {
+        const user = await guild.members.fetch(top50[i].user_id)
+            .then(member => member.user)
+            .catch(() => ({ username: 'Utilisateur Inconnu' }));
+        
+        // Ajouter des emojis spéciaux pour les 3 premiers
+        let rank = '';
+        if (i === 0) rank = '🥇 ';
+        else if (i === 1) rank = '🥈 ';
+        else if (i === 2) rank = '🥉 ';
+        else rank = `${i + 1}. `;
+        
+        result += `${rank}${user.username}: ${top50[i][field]} points\n`;
+        
+        // Ajouter une ligne vide après le top 3 et après chaque groupe de 10
+        if (i === 2 || (i + 1) % 10 === 0) {
+            result += '\n';
+        }
+    }
+    return result || 'Aucun classement disponible';
+}
