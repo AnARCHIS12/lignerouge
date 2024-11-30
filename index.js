@@ -1866,7 +1866,7 @@ client.on('interactionCreate', async interaction => {
             const title = interaction.fields.getTextInputValue('welcome_title');
             const content = interaction.fields.getTextInputValue('welcome_content');
 
-            // Mise à jour de la configuration
+            // Mettre à jour la configuration
             db.run(`
                 INSERT INTO guild_config (guild_id, welcome_title, welcome_content) 
                 VALUES (?, ?, ?)
@@ -2931,7 +2931,8 @@ client.on('guildMemberAdd', async member => {
 
         // S'assurer que le cache des membres est à jour
         await member.guild.members.fetch();
-        const memberCount = member.guild.memberCount;
+        const memberCount = (await member.guild.members.fetch()).size;
+        console.log(`Nombre de membres dans ${member.guild.name}: ${memberCount}`);
 
         // Préparer le titre et le contenu
         const title = (configRow?.welcome_title?.replace('{user}', member.user.username)
@@ -2992,11 +2993,9 @@ client.on('guildMemberAdd', async member => {
         }
 
         if (welcomeChannel) {
-            await welcomeChannel.send({ 
-                content: `<@${member.id}>`,  // Mention explicite
-                embeds: [welcomeEmbed],
-                allowedMentions: { users: [member.id] }  // S'assurer que la mention fonctionne
-            });
+            const notificationMessage = await welcomeChannel.send({ content: `<@${member.id}>` });
+            await notificationMessage.delete();  // Supprimer immédiatement la mention
+            await welcomeChannel.send({ embeds: [welcomeEmbed] });
         }
     } catch (error) {
         console.error('Erreur lors de l\'envoi du message de bienvenue:', error);
