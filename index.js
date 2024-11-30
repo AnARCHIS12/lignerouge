@@ -85,6 +85,34 @@ const CONFIG = {
     }
 };
 
+// Configuration du leaderboard
+let leaderboardJob;
+const DEFAULT_LEADERBOARD_TIME = '0 0 * * 0'; // Dimanche à minuit par défaut
+
+// Fonction pour mettre à jour le cron du leaderboard
+function updateLeaderboardSchedule(cronExpression) {
+    if (leaderboardJob) {
+        leaderboardJob.stop();
+    }
+    
+    leaderboardJob = cron.schedule(cronExpression, async () => {
+        console.log('🕛 Démarrage de l\'envoi du classement hebdomadaire...');
+        for (const [guildId] of client.guilds.cache) {
+            try {
+                console.log(`📊 Tentative d'envoi du classement pour le serveur ${guildId}...`);
+                await sendWeeklySummary(guildId);
+                console.log(`✅ Classement envoyé avec succès pour le serveur ${guildId}`);
+            } catch (error) {
+                console.error(`❌ Erreur lors de l'envoi du leaderboard pour ${guildId}:`, error);
+            }
+        }
+        console.log('🏁 Fin de l\'envoi des classements hebdomadaires');
+    }, {
+        scheduled: true,
+        timezone: "Europe/Paris"
+    });
+}
+
 // Cache pour le cooldown des messages
 const messageCooldowns = new Map();
 
@@ -139,15 +167,18 @@ function initDatabase() {
         });
 
         // Table de configuration
-        db.run(`CREATE TABLE IF NOT EXISTS guild_config (
-            guild_id TEXT PRIMARY KEY,
-            mod_role_id TEXT,
-            leaderboard_channel_id TEXT,
-            welcome_channel_id TEXT,
-            welcome_title TEXT,
-            welcome_content TEXT,
-            welcome_image TEXT
-        )`, err => {
+        db.run(`
+            CREATE TABLE IF NOT EXISTS guild_config (
+                guild_id TEXT PRIMARY KEY,
+                mod_role_id TEXT,
+                leaderboard_channel_id TEXT,
+                welcome_channel_id TEXT,
+                welcome_title TEXT,
+                welcome_content TEXT,
+                welcome_image TEXT,
+                leaderboard_time TEXT DEFAULT '0 0 * * 0'
+            )
+        `, err => {
             if (err) {
                 console.error('Erreur lors de la création de la table guild_config:', err);
             } else {
@@ -169,6 +200,33 @@ function initDatabase() {
         });
     });
 }
+
+// Migration : Ajouter la colonne leaderboard_time si elle n'existe pas
+db.get("PRAGMA table_info(guild_config)", (err, rows) => {
+    if (err) {
+        console.error('Erreur lors de la vérification de la structure de la table:', err);
+        return;
+    }
+    
+    // Vérifier si la colonne existe déjà
+    db.get("SELECT COUNT(*) as count FROM pragma_table_info('guild_config') WHERE name='leaderboard_time'", (err, row) => {
+        if (err) {
+            console.error('Erreur lors de la vérification de la colonne:', err);
+            return;
+        }
+
+        if (row.count === 0) {
+            console.log('📊 Ajout de la colonne leaderboard_time...');
+            db.run("ALTER TABLE guild_config ADD COLUMN leaderboard_time TEXT DEFAULT '0 0 * * 0'", (err) => {
+                if (err) {
+                    console.error('Erreur lors de l\'ajout de la colonne:', err);
+                } else {
+                    console.log('✅ Colonne leaderboard_time ajoutée avec succès');
+                }
+            });
+        }
+    });
+});
 
 // Quand le bot est prêt
 client.once('ready', async () => {
@@ -345,14 +403,29 @@ async function sendWeeklySummary(guildId) {
 }
 
 // Planifier l'envoi du leaderboard
-cron.schedule('0 0 * * 0', async () => {
-    for (const [guildId] of client.guilds.cache) {
-        try {
-            await sendWeeklySummary(guildId);
-        } catch (error) {
-            console.error(`Erreur lors de l'envoi du leaderboard pour ${guildId}:`, error);
+client.once('ready', () => {
+    // Attendre que le client soit prêt avant d'initialiser le cron
+    setTimeout(() => {
+        const firstGuild = client.guilds.cache.first();
+        if (firstGuild) {
+            db.get('SELECT leaderboard_time FROM guild_config WHERE guild_id = ?', 
+                [firstGuild.id], 
+                (err, row) => {
+                    if (err) {
+                        console.error('Erreur SQL:', err);
+                        return;
+                    }
+
+                    const leaderboardTime = row?.leaderboard_time || DEFAULT_LEADERBOARD_TIME;
+                    console.log(`📅 Planification du classement : ${leaderboardTime}`);
+                    updateLeaderboardSchedule(leaderboardTime);
+                }
+            );
+        } else {
+            console.log('⚠️ Aucun serveur trouvé pour initialiser le classement');
+            updateLeaderboardSchedule(DEFAULT_LEADERBOARD_TIME);
         }
-    }
+    }, 1000); // Attendre 1 seconde pour s'assurer que tout est initialisé
 });
 
 // Gérer les interactions
@@ -493,7 +566,7 @@ client.on('interactionCreate', async interaction => {
     // Menu Configuration
     else if (interaction.customId === 'menu_config') {
         db.get(
-            'SELECT mod_role_id, leaderboard_channel_id, welcome_channel_id FROM guild_config WHERE guild_id = ?',
+            'SELECT mod_role_id, leaderboard_channel_id, welcome_channel_id, leaderboard_time FROM guild_config WHERE guild_id = ?',
             [interaction.guildId],
             async (err, row) => {
                 if (err) {
@@ -504,6 +577,42 @@ client.on('interactionCreate', async interaction => {
                 const currentModRole = row?.mod_role_id ? `<@&${row.mod_role_id}>` : 'Non assigné';
                 const currentChannel = row?.leaderboard_channel_id ? `<#${row.leaderboard_channel_id}>` : 'Non assigné';
                 const welcomeChannel = row?.welcome_channel_id ? `<#${row.welcome_channel_id}>` : 'Non assigné';
+
+                const configEmbed = new EmbedBuilder()
+                    .setTitle('⚙️ Directives du Parti')
+                    .setDescription('Configuration du système')
+                    .setColor('#CC0000');
+
+                if (row?.mod_role_id) {
+                    const role = interaction.guild.roles.cache.get(row.mod_role_id);
+                    configEmbed.addFields({
+                        name: '🛠️ Garde Rouge',
+                        value: role ? `Rôle actuel : ${role}` : 'Rôle non trouvé'
+                    });
+                }
+
+                if (row?.leaderboard_channel_id) {
+                    const channel = interaction.guild.channels.cache.get(row.leaderboard_channel_id);
+                    configEmbed.addFields({
+                        name: '📢 Canal de Propagande',
+                        value: channel ? `Canal actuel : ${channel}` : 'Canal non trouvé'
+                    });
+                }
+
+                if (row?.welcome_channel_id) {
+                    const channel = interaction.guild.channels.cache.get(row.welcome_channel_id);
+                    configEmbed.addFields({
+                        name: '🚩 Canal d\'Accueil',
+                        value: channel ? `Canal actuel : ${channel}` : 'Canal non trouvé'
+                    });
+                }
+
+                if (row?.leaderboard_time) {
+                    configEmbed.addFields({
+                        name: '⏰ Heure d\'envoi du Classement',
+                        value: `Configuration actuelle : ${row.leaderboard_time || DEFAULT_LEADERBOARD_TIME}`
+                    });
+                }
 
                 const row1 = new ActionRowBuilder()
                     .addComponents(
@@ -521,15 +630,24 @@ client.on('interactionCreate', async interaction => {
                             .setCustomId('config_welcome_channel')
                             .setLabel('Canal d\'Accueil')
                             .setStyle(ButtonStyle.Primary)
-                            .setEmoji('🚩'),
+                            .setEmoji('🚩')
+                    );
+
+                const row2 = new ActionRowBuilder()
+                    .addComponents(
                         new ButtonBuilder()
                             .setCustomId('welcome_config')
                             .setLabel('Message d\'Accueil')
                             .setStyle(ButtonStyle.Primary)
-                            .setEmoji('📨')
+                            .setEmoji('📨'),
+                        new ButtonBuilder()
+                            .setCustomId('config_leaderboard_time')
+                            .setLabel('Heure du Classement')
+                            .setStyle(ButtonStyle.Primary)
+                            .setEmoji('⏰')
                     );
 
-                const row2 = new ActionRowBuilder()
+                const row3 = new ActionRowBuilder()
                     .addComponents(
                         new ButtonBuilder()
                             .setCustomId('config_recipients')
@@ -543,21 +661,113 @@ client.on('interactionCreate', async interaction => {
                             .setEmoji('↩️')
                     );
 
-                const embed = new EmbedBuilder()
-                    .setTitle('⚙️ Directives du Parti ⚙️')
-                    .setDescription(
-                        'Configuration actuelle :\n\n' +
-                        `🛠️ **Garde Rouge** - ${currentModRole}\n` +
-                        `📢 **Canal de Propagande** - ${currentChannel}\n` +
-                        `🚩 **Canal d'Accueil** - ${welcomeChannel}\n` +
-                        '📨 **Message d\'Accueil** - Message de bienvenue révolutionnaire'
-                    )
-                    .setColor('#CC0000')
-                    .setFooter({ text: 'Le Parti guide nos actions !' });
-
-                await interaction.update({ embeds: [embed], components: [row1, row2] });
+                await interaction.update({
+                    embeds: [configEmbed],
+                    components: [row1, row2, row3]
+                });
             }
         );
+    }
+
+    // Configuration de l'heure d'envoi du classement
+    else if (interaction.customId === 'config_leaderboard_time') {
+        try {
+            // Créer le modal
+            const modal = new ModalBuilder()
+                .setCustomId('leaderboard_time_modal')
+                .setTitle('⏰ Configuration de l\'Heure d\'Envoi');
+
+            const timeInput = new TextInputBuilder()
+                .setCustomId('cron_expression')
+                .setLabel('Expression Cron')
+                .setStyle(TextInputStyle.Short)
+                .setPlaceholder('0 0 * * 0')
+                .setValue(DEFAULT_LEADERBOARD_TIME)
+                .setRequired(true);
+
+            const helpText = new TextInputBuilder()
+                .setCustomId('help_text')
+                .setLabel('Format')
+                .setStyle(TextInputStyle.Paragraph)
+                .setValue('Format: minute heure * * jour\nExemples:\n0 0 * * 0 = Dimanche à minuit\n0 20 * * 0 = Dimanche à 20h00')
+                .setRequired(false);
+
+            const row1 = new ActionRowBuilder().addComponents(timeInput);
+            const row2 = new ActionRowBuilder().addComponents(helpText);
+
+            modal.addComponents(row1, row2);
+
+            await interaction.showModal(modal);
+        } catch (error) {
+            console.error('Erreur lors de l\'affichage du modal:', error);
+            await interaction.update({
+                content: '❌ Une erreur s\'est produite lors de la configuration.',
+                ephemeral: true
+            });
+        }
+    }
+
+    // Traitement du modal de configuration de l'heure
+    else if (interaction.customId === 'leaderboard_time_modal') {
+        try {
+            const cronExpression = interaction.fields.getTextInputValue('cron_expression');
+
+            // Vérifier si l'expression cron est valide
+            try {
+                new cron.schedule(cronExpression, () => {});
+            } catch (error) {
+                await interaction.update({
+                    content: '❌ Expression cron invalide. Veuillez utiliser un format valide (ex: 0 0 * * 0)',
+                    ephemeral: true
+                });
+                return;
+            }
+
+            // Sauvegarder dans la base de données
+            db.run(
+                'INSERT INTO guild_config (guild_id, leaderboard_time) VALUES (?, ?) ON CONFLICT(guild_id) DO UPDATE SET leaderboard_time = excluded.leaderboard_time',
+                [interaction.guildId, cronExpression],
+                async (err) => {
+                    if (err) {
+                        console.error('Erreur SQL:', err);
+                        await interaction.update({
+                            content: '❌ Une erreur s\'est produite lors de la sauvegarde.',
+                            ephemeral: true
+                        });
+                        return;
+                    }
+
+                    // Mettre à jour le planning
+                    updateLeaderboardSchedule(cronExpression);
+
+                    const embed = new EmbedBuilder()
+                        .setTitle('✅ Heure d\'Envoi Configurée')
+                        .setDescription(`Le classement sera envoyé selon l'expression : ${cronExpression}`)
+                        .setColor('#CC0000')
+                        .setFooter({ text: 'Configuration sauvegardée' });
+
+                    const row = new ActionRowBuilder()
+                        .addComponents(
+                            new ButtonBuilder()
+                                .setCustomId('menu_config')
+                                .setLabel('Retour aux Directives')
+                                .setStyle(ButtonStyle.Secondary)
+                                .setEmoji('↩️')
+                        );
+
+                    await interaction.update({
+                        embeds: [embed],
+                        components: [row]
+                    });
+                }
+            );
+        } catch (error) {
+            console.error('Erreur lors du traitement du modal:', error);
+            await interaction.update({
+                content: '❌ Une erreur s\'est produite lors de la configuration.',
+                ephemeral: true
+            });
+        }
     }
 
     // Menu Justice
@@ -660,7 +870,7 @@ client.on('interactionCreate', async interaction => {
                 .setTitle('⚖️ Département de la Justice ⚖️')
                 .setDescription('Sélectionnez une catégorie d\'action à déclarer.')
                 .setColor('#CC0000')
-                .setFooter({ text: 'Le Parti récompense ses fidèles serviteurs !' });
+                .setFooter({ text: 'Le Parti observe vos actions avec attention !' });
 
             await interaction.update({
                 embeds: [embed],
@@ -730,7 +940,7 @@ client.on('interactionCreate', async interaction => {
                 .setTitle('📝 Sélection de l\'Action')
                 .setDescription('Sélectionnez l\'action spécifique à déclarer.')
                 .setColor('#CC0000')
-                .setFooter({ text: 'Le Parti observe vos actions avec attention !' });
+                .setFooter({ text: 'Le Parti demande des comptes !' });
 
             await interaction.update({
                 embeds: [embed],
@@ -1163,8 +1373,11 @@ client.on('interactionCreate', async interaction => {
                 components: [returnButton]
             });
 
-            // Envoyer le rapport aux admins
             try {
+                // Créer un Set pour les destinataires uniques
+                const uniqueRecipients = new Set();
+
+                // Récupérer la configuration
                 const config = await new Promise((resolve, reject) => {
                     db.get('SELECT mod_role_id FROM guild_config WHERE guild_id = ?', 
                         [interaction.guildId], 
@@ -1175,28 +1388,24 @@ client.on('interactionCreate', async interaction => {
                     );
                 });
 
+                console.log('Config récupérée:', config);
+
+                // Ajouter les admins au Set
                 if (config?.mod_role_id) {
+                    console.log('Role modérateur trouvé:', config.mod_role_id);
                     const admins = interaction.guild.members.cache
-                        .filter(member => member.roles.cache.has(config.mod_role_id));
-
-                    for (const admin of admins.values()) {
-                        try {
-                            await admin.send({
-                                embeds: [reportEmbed],
-                                content: `🚨 Nouvelle action de modération dans ${interaction.guild.name}`
-                            });
-                        } catch (dmError) {
-                            console.error(`Impossible d'envoyer le DM à ${admin.user.tag}:`, dmError);
-                        }
-                    }
+                        .filter(member => member.roles.cache.has(config.mod_role_id) && !member.user.bot);
+                    
+                    console.log('Admins trouvés:', admins.size);
+                    admins.forEach(member => {
+                        uniqueRecipients.add(member.id);
+                        console.log('Admin ajouté:', member.user.tag);
+                    });
+                } else {
+                    console.log('Aucun rôle modérateur configuré');
                 }
-            } catch (error) {
-                console.error('Erreur lors de l\'envoi des rapports aux admins:', error);
-            }
 
-            // Envoyer le rapport aux destinataires configurés
-            try {
-                // Récupérer tous les destinataires configurés
+                // Récupérer et ajouter les destinataires configurés
                 const rows = await new Promise((resolve, reject) => {
                     db.all('SELECT user_id FROM report_recipients WHERE guild_id = ?', 
                         [interaction.guildId], 
@@ -1207,60 +1416,74 @@ client.on('interactionCreate', async interaction => {
                     );
                 });
 
-                // Créer un Set pour éviter les doublons
-                const recipientIds = new Set(rows.map(row => row.user_id));
+                console.log('Destinataires configurés trouvés:', rows.length);
+                for (const row of rows) {
+                    try {
+                        const member = await interaction.guild.members.fetch(row.user_id);
+                        if (member && !member.user.bot) {
+                            uniqueRecipients.add(row.user_id);
+                            console.log('Destinataire ajouté:', member.user.tag);
+                        }
+                    } catch (error) {
+                        console.log('Destinataire ignoré (non trouvé):', row.user_id);
+                    }
+                }
 
-                if (recipientIds.size > 0) {
-                    const failedRecipients = [];
+                console.log('Nombre total de destinataires uniques:', uniqueRecipients.size);
 
-                    for (const userId of recipientIds) {
-                        try {
-                            const recipient = await client.users.fetch(userId);
-                            const dmChannel = await recipient.createDM();
-                            await dmChannel.send({ embeds: [reportEmbed] });
-                        } catch (error) {
-                            console.error(`Erreur lors de l'envoi du rapport à ${userId}:`, error);
-                            if (error.code === 50007) { // Cannot send messages to this user
-                                failedRecipients.push(userId);
-                                // Supprimer automatiquement le destinataire qui a bloqué les DMs
-                                try {
-                                    await new Promise((resolve, reject) => {
-                                        db.run('DELETE FROM report_recipients WHERE guild_id = ? AND user_id = ?',
-                                            [interaction.guildId, userId],
-                                            err => err ? reject(err) : resolve()
-                                        );
-                                    });
-                                } catch (dbError) {
-                                    console.error('Erreur lors de la suppression du destinataire:', dbError);
-                                }
+                // Envoyer le rapport à chaque destinataire unique
+                const failedRecipients = [];
+
+                for (const userId of uniqueRecipients) {
+                    try {
+                        const recipient = await client.users.fetch(userId);
+                        console.log('Tentative d\'envoi à:', recipient.tag);
+                        await recipient.send({
+                            embeds: [reportEmbed],
+                            content: `🚨 Nouvelle action de modération dans ${interaction.guild.name}`
+                        });
+                        console.log('Message envoyé avec succès à:', recipient.tag);
+                    } catch (error) {
+                        console.error(`Erreur lors de l'envoi du rapport à ${userId}:`, error);
+                        if (error.code === 50007) {
+                            failedRecipients.push(userId);
+                            try {
+                                await new Promise((resolve, reject) => {
+                                    db.run('DELETE FROM report_recipients WHERE guild_id = ? AND user_id = ?',
+                                        [interaction.guildId, userId],
+                                        err => err ? reject(err) : resolve()
+                                    );
+                                });
+                                console.log('Destinataire supprimé car DMs bloqués:', userId);
+                            } catch (dbError) {
+                                console.error('Erreur lors de la suppression du destinataire:', dbError);
                             }
                         }
                     }
+                }
 
-                    // Si des destinataires ont échoué, informer l'administrateur
-                    if (failedRecipients.length > 0) {
-                        const errorEmbed = new EmbedBuilder()
-                            .setColor('#ff0000')
-                            .setTitle('⚠️ Erreur d\'Envoi des Rapports')
-                            .setDescription(
-                                `Impossible d'envoyer les rapports aux destinataires suivants car ils ont désactivé les DMs :\n` +
-                                failedRecipients.map(id => `<@${id}>`).join('\n') +
-                                '\n\nCes destinataires ont été automatiquement retirés de la liste.'
-                            )
-                            .setTimestamp();
+                if (failedRecipients.length > 0) {
+                    const errorEmbed = new EmbedBuilder()
+                        .setColor('#ff0000')
+                        .setTitle('⚠️ Erreur d\'Envoi des Rapports')
+                        .setDescription(
+                            `Impossible d'envoyer les rapports aux destinataires suivants :\n` +
+                            failedRecipients.map(id => `<@${id}>`).join('\n') +
+                            '\n\nCause possible : DMs bloqués'
+                        )
+                        .setTimestamp();
 
-                        try {
-                            await interaction.followUp({
-                                embeds: [errorEmbed],
-                                ephemeral: true
-                            });
-                        } catch (followUpError) {
-                            console.error('Erreur lors de l\'envoi du message d\'erreur:', followUpError);
-                        }
+                    try {
+                        await interaction.followUp({
+                            embeds: [errorEmbed],
+                            ephemeral: true
+                        });
+                    } catch (followUpError) {
+                        console.error('Erreur lors de l\'envoi du message d\'erreur:', followUpError);
                     }
                 }
             } catch (error) {
-                console.error('Erreur lors de la gestion des destinataires:', error);
+                console.error('Erreur lors de l\'envoi des rapports:', error);
             }
         } catch (error) {
             console.error('Erreur lors du traitement du rapport:', error);
@@ -1590,13 +1813,11 @@ client.on('interactionCreate', async interaction => {
 
         const embed = new EmbedBuilder()
             .setTitle('☭ Configuration du Message de Bienvenue ☭')
-            .setDescription(
-                'Configurez le message qui accueillera les nouveaux camarades :\n\n' +
+            .setDescription('Configurez le message qui accueillera les nouveaux camarades :\n\n' +
                 '**Variables disponibles :**\n' +
                 '`{user}` - Mention du nouveau membre\n' +
                 '`{server}` - Nom du serveur\n' +
-                '`{memberCount}` - Nombre total de membres'
-            )
+                '`{memberCount}` - Nombre total de membres')
             .setColor('#CC0000')
             .setFooter({ text: 'Un accueil chaleureux pour nos camarades !' });
 
@@ -1979,15 +2200,15 @@ client.on('interactionCreate', async interaction => {
 
         const embed = new EmbedBuilder()
             .setTitle(`☭ Dossier du Camarade ${user.tag} ☭`)
-            .setDescription(
-                'Sélectionnez les mesures disciplinaires à appliquer.\n' +
-                'Plusieurs sanctions peuvent être appliquées simultanément.'
-            )
+            .setDescription('Sélectionnez les mesures disciplinaires à appliquer.')
             .setThumbnail(user.displayAvatarURL())
             .setColor('#CC0000')
             .setFooter({ text: 'La justice du Parti est implacable !' });
 
-        await interaction.update({ embeds: [embed], components: [row, row2] });
+        await interaction.update({
+            embeds: [embed],
+            components: [row, row2]
+        });
     }
 
     // Ajout d'une action
