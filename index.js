@@ -437,7 +437,7 @@ client.on('interactionCreate', async interaction => {
                         .setStyle(ButtonStyle.Danger)
                         .setEmoji('⚔️'),
                     new ButtonBuilder()
-                        .setCustomId('menu_medals')
+                        .setCustomId('ordre_drapeau_rouge')
                         .setLabel('Ordre du Drapeau Rouge')
                         .setStyle(ButtonStyle.Danger)
                         .setEmoji('🎖️'),
@@ -1301,7 +1301,7 @@ client.on('interactionCreate', async interaction => {
                         .setStyle(ButtonStyle.Danger)
                         .setEmoji('⚔️'),
                     new ButtonBuilder()
-                        .setCustomId('menu_medals')
+                        .setCustomId('ordre_drapeau_rouge')
                         .setLabel('Ordre du Drapeau Rouge')
                         .setStyle(ButtonStyle.Danger)
                         .setEmoji('🎖️'),
@@ -1309,7 +1309,7 @@ client.on('interactionCreate', async interaction => {
                         .setCustomId('menu_config')
                         .setLabel('Directives du Parti')
                         .setStyle(ButtonStyle.Secondary)
-                        .setEmoji('⭐')
+                        .setEmoji('⚙️')
                 );
 
             await interaction.update({ embeds: [mainEmbed], components: [row] });
@@ -2616,6 +2616,60 @@ client.on('interactionCreate', async interaction => {
             ephemeral: true
         });
     }
+
+    // Ordre du Drapeau Rouge
+    else if (interaction.customId === 'ordre_drapeau_rouge') {
+        try {
+            // Récupérer le top 50 des utilisateurs par XP
+            db.all(
+                `SELECT user_id, xp 
+                FROM mod_xp 
+                WHERE guild_id = ? 
+                ORDER BY xp DESC 
+                LIMIT 50`,
+                [interaction.guildId],
+                async (err, rows) => {
+                    if (err) {
+                        console.error('Erreur lors de la récupération du classement:', err);
+                        await interaction.reply({
+                            content: '❌ Une erreur s\'est produite lors de la récupération du classement.',
+                            ephemeral: true
+                        });
+                        return;
+                    }
+
+                    const rankings = await formatTop5(interaction.guild, rows, 'xp');
+                    
+                    const embed = new EmbedBuilder()
+                        .setColor('#ff0000')
+                        .setTitle('🎖️ Ordre du Drapeau Rouge')
+                        .setDescription('Les camarades les plus méritants du Parti')
+                        .addFields({ name: 'Classement', value: rankings || 'Aucun classement disponible' })
+                        .setTimestamp();
+
+                    const row = new ActionRowBuilder()
+                        .addComponents(
+                            new ButtonBuilder()
+                                .setCustomId('return_dashboard')
+                                .setLabel('Retour')
+                                .setStyle(ButtonStyle.Secondary)
+                        );
+
+                    await interaction.reply({
+                        embeds: [embed],
+                        components: [row],
+                        ephemeral: true
+                    });
+                }
+            );
+        } catch (error) {
+            console.error('Erreur lors de l\'affichage du classement:', error);
+            await interaction.reply({
+                content: '❌ Une erreur s\'est produite lors de l\'affichage du classement.',
+                ephemeral: true
+            });
+        }
+    }
 });
 
 // Gérer les messages pour l'XP
@@ -2659,16 +2713,14 @@ client.on('guildMemberAdd', async member => {
         const memberCount = member.guild.memberCount;
 
         // Préparer le titre et le contenu
-        const title = (configRow?.welcome_title || `☭ Bienvenue au Parti, Camarade {user} ! ☭`)
-            .replace('{user}', member.user.username)
+        const title = (configRow?.welcome_title?.replace('{user}', member.user.username)
             .replace('{server}', member.guild.name)
-            .replace('{memberCount}', memberCount);
+            .replace('{memberCount}', memberCount) || `☭ Bienvenue au Parti, Camarade {user} ! ☭`);
 
-        const content = (configRow?.welcome_content || 
-            `Le Parti accueille chaleureusement {user} dans nos rangs !\nTu es notre {memberCount}ème camarade.`)
-            .replace('{user}', `<@${member.id}>`)
+        const content = (configRow?.welcome_content?.replace('{user}', `<@${member.id}>`)
             .replace('{server}', member.guild.name)
-            .replace('{memberCount}', memberCount);
+            .replace('{memberCount}', memberCount) ||
+            `Le Parti accueille chaleureusement {user} dans nos rangs !\nTu es notre {memberCount}ème camarade.`);
 
         // Créer l'embed
         const welcomeEmbed = new EmbedBuilder()
