@@ -35,12 +35,53 @@ const CONFIG = {
     XP_MULTIPLICATEUR: 1.5,
     COOLDOWN: 60000,
     ACTIONS: {
+        // Actions de modération de base
         WARN: { xp: 5, description: 'Avertissement' },
         MUTE: { xp: 10, description: 'Réduction au silence' },
         KICK: { xp: 15, description: 'Exclusion' },
         BAN: { xp: 25, description: 'Bannissement' },
         DELETE: { xp: 3, description: 'Suppression de message' },
-        TIMEOUT: { xp: 8, description: 'Mise en isolement' }
+        TIMEOUT: { xp: 8, description: 'Mise en isolement' },
+        
+        // Actions de douane et accueil
+        CONTROLE_DOUANE: { xp: 790, description: 'Contrôle à la douane' },
+        EXPULSION_CENTRE: { xp: 270, description: 'Expulsion vers le centre d\'apprentissage' },
+        ACCUEIL_SIMPLE: { xp: 2500, description: 'Accueil des nouveaux' },
+        ACCUEIL_SUIVI: { xp: 10500, description: 'Accueil avec suivi (10+ messages)' },
+        REATTRIBUTION_NUMERO: { xp: 20, description: 'Réattribution de numéro d\'apprentis' },
+        
+        // Actions d'animation
+        DEBAT: { xp: 900, description: 'Proposer un débat' },
+        DEBAT_ACTIF: { xp: 3000, description: 'Débat générant +25 messages' },
+        SONDAGE: { xp: 1400, description: 'Proposer un sondage' },
+        CONCOURS: { xp: 2500, description: 'Proposer un petit concours' },
+        EVENT: { xp: 9500, description: 'Proposer un event/tournois' },
+        VOCAL: { xp: 3000, description: 'Proposer un vocal (+20 min)' },
+        
+        // Actions de contenu
+        MEME: { xp: 2000, description: 'Créer un meme' },
+        MEME_VALIDE: { xp: 3000, description: 'Meme validé par le rôle inconnu' },
+        VIDEO: { xp: 15000, description: 'Créer une vidéo' },
+        REPOST: { xp: 700, description: 'Republier un post' },
+        
+        // Actions pédagogiques
+        FICHE_PRISONNIER: { xp: 4500, description: 'Créer une fiche prisonnier' },
+        COURS: { xp: 8000, description: 'Délivrer un cours aux camarades' },
+        APPRENTISSAGE: { xp: 10000, description: 'Apprendre une notion à un apprentis' },
+        EVOLUTION_NOTE: { xp: 3000, description: 'Faire évoluer la note d\'un apprentis' },
+        
+        // Actions de progression
+        ETAPE_AUTONOMIE: { xp: 30000, description: 'Passer une étape d\'autonomie' },
+        PUBLICATION_SOCIALE: { xp: 4000, description: 'Publier sur un réseau social' },
+        
+        // Actions de sécurité
+        LISTE_SUSPECT: { xp: 800, description: 'Lister un suspect' },
+        PREUVE_SUSPICION: { xp: 4000, description: 'Apporter des preuves à la suspicion' },
+        ARRET_INTRUS: { xp: 600, description: 'Arrêter un intrus' },
+        
+        // Actions journal
+        ARTICLE: { xp: 8000, description: 'Rédiger un article' },
+        INTERVIEW: { xp: 3000, description: 'Mener une interview' }
     }
 };
 
@@ -162,7 +203,7 @@ client.once('ready', async () => {
         // Enregistrer/mettre à jour la commande dashboard
         await client.application.commands.create({
             name: 'dashboard',
-            description: '☭ Bureau Politique du Parti ☭'
+            description: '🛠️ Bureau Politique du Parti 🛠️'
         });
         console.log('Commande dashboard enregistrée');
     } catch (error) {
@@ -398,7 +439,7 @@ client.on('interactionCreate', async interaction => {
                     new ButtonBuilder()
                         .setCustomId('menu_medals')
                         .setLabel('Ordre du Drapeau Rouge')
-                        .setStyle(ButtonStyle.Primary)
+                        .setStyle(ButtonStyle.Danger)
                         .setEmoji('🎖️'),
                     new ButtonBuilder()
                         .setCustomId('menu_config')
@@ -470,7 +511,7 @@ client.on('interactionCreate', async interaction => {
                             .setCustomId('config_mod_role')
                             .setLabel('Garde Rouge')
                             .setStyle(ButtonStyle.Danger)
-                            .setEmoji('👮'),
+                            .setEmoji('🛠️'),
                         new ButtonBuilder()
                             .setCustomId('config_leaderboard')
                             .setLabel('Canal de Propagande')
@@ -506,7 +547,7 @@ client.on('interactionCreate', async interaction => {
                     .setTitle('⚙️ Directives du Parti ⚙️')
                     .setDescription(
                         'Configuration actuelle :\n\n' +
-                        `👮 **Garde Rouge** - ${currentModRole}\n` +
+                        `🛠️ **Garde Rouge** - ${currentModRole}\n` +
                         `📢 **Canal de Propagande** - ${currentChannel}\n` +
                         `🚩 **Canal d'Accueil** - ${welcomeChannel}\n` +
                         '📨 **Message d\'Accueil** - Message de bienvenue révolutionnaire'
@@ -543,109 +584,71 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
-            // Créer le menu de sélection d'action
-            const actionSelect = new StringSelectMenuBuilder()
-                .setCustomId('select_action_type')
-                .setPlaceholder('Type d\'action')
-                .addOptions(
-                    Object.entries(CONFIG.ACTIONS).map(([key, value]) => ({
-                        label: value.description,
-                        description: `${value.xp} points de mérite`,
-                        value: key
-                    }))
-                );
-
-            const row = new ActionRowBuilder()
-                .addComponents(actionSelect);
-
-            const embed = new EmbedBuilder()
-                .setTitle('⚔️ Tribunal Révolutionnaire ⚔️')
-                .setDescription(
-                    'Sélectionnez le type d\'action que vous avez effectué.\n\n' +
-                    '**Récompenses du Parti :**\n' +
-                    Object.entries(CONFIG.ACTIONS)
-                        .map(([key, value]) => `${value.description}: ${value.xp} points de mérite`)
-                        .join('\n')
-                )
-                .setColor('#CC0000')
-                .setFooter({ text: 'La Justice du Peuple est implacable !' });
-
-            await interaction.update({
-                embeds: [embed],
-                components: [row]
-            });
-        } catch (error) {
-            console.error('Erreur lors de l\'affichage du menu justice:', error);
-            try {
-                await interaction.update({
-                    content: '❌ Une erreur s\'est produite dans les rouages de la justice prolétarienne.',
-                    ephemeral: true
-                });
-            } catch (replyError) {
-                console.error('Erreur lors de la réponse d\'erreur:', replyError);
-            }
-        }
-    }
-
-    // Menu Médailles
-    else if (interaction.customId === 'menu_medals') {
-        try {
-            // Récupérer les statistiques de l'utilisateur
-            const stats = await new Promise((resolve, reject) => {
-                db.get(
-                    'SELECT xp, weekly_xp FROM mod_xp WHERE user_id = ? AND guild_id = ?',
-                    [interaction.user.id, interaction.guildId],
-                    (err, row) => {
-                        if (err) reject(err);
-                        else resolve(row || { xp: 0, weekly_xp: 0 });
+            // Créer le menu de sélection de catégorie
+            const categorySelect = new StringSelectMenuBuilder()
+                .setCustomId('select_action_category')
+                .setPlaceholder('Sélectionner une catégorie')
+                .addOptions([
+                    {
+                        label: 'Modération',
+                        description: 'Actions de modération de base',
+                        value: 'moderation',
+                        emoji: '🛡️'
+                    },
+                    {
+                        label: 'Douane et Accueil',
+                        description: 'Actions liées à l\'accueil des nouveaux',
+                        value: 'douane',
+                        emoji: '🚪'
+                    },
+                    {
+                        label: 'Animation',
+                        description: 'Actions d\'animation et événements',
+                        value: 'animation',
+                        emoji: '🎮'
+                    },
+                    {
+                        label: 'Contenu',
+                        description: 'Actions de création de contenu',
+                        value: 'contenu',
+                        emoji: '🎨'
+                    },
+                    {
+                        label: 'Pédagogie',
+                        description: 'Actions pédagogiques',
+                        value: 'pedagogie',
+                        emoji: '📚'
+                    },
+                    {
+                        label: 'Progression',
+                        description: 'Actions de progression',
+                        value: 'progression',
+                        emoji: '📈'
+                    },
+                    {
+                        label: 'Sécurité',
+                        description: 'Actions de sécurité',
+                        value: 'securite',
+                        emoji: '🔒'
+                    },
+                    {
+                        label: 'Journal',
+                        description: 'Actions liées au journal',
+                        value: 'journal',
+                        emoji: '📰'
                     }
-                );
-            });
+                ]);
 
-            // Récupérer le classement
-            const rankings = await new Promise((resolve, reject) => {
-                db.all(
-                    `SELECT user_id, xp, weekly_xp,
-                    RANK() OVER (ORDER BY xp DESC) as total_rank,
-                    RANK() OVER (ORDER BY weekly_xp DESC) as weekly_rank
-                    FROM mod_xp 
-                    WHERE guild_id = ?`,
-                    [interaction.guildId],
-                    (err, rows) => {
-                        if (err) reject(err);
-                        else resolve(rows || []);
-                    }
-                );
-            });
+            const row1 = new ActionRowBuilder()
+                .addComponents(categorySelect);
 
-            // Trouver le rang de l'utilisateur
-            const userRanking = rankings.find(r => r.user_id === interaction.user.id) || {
-                total_rank: rankings.length + 1,
-                weekly_rank: rankings.length + 1
-            };
-
-            // Créer l'embed
-            const embed = new EmbedBuilder()
-                .setTitle('🎖️ Ordre du Drapeau Rouge 🎖️')
-                .setDescription(
-                    `**Camarade ${interaction.user.username},**\n\n` +
-                    `**Points de Mérite Révolutionnaire**\n` +
-                    `› Total : ${stats.xp} PMR\n` +
-                    `› Cette semaine : ${stats.weekly_xp} PMR\n\n` +
-                    `**Position dans le Parti**\n` +
-                    `› Classement historique : #${userRanking.total_rank}\n` +
-                    `› Classement hebdomadaire : #${userRanking.weekly_rank}\n\n` +
-                    '**Héros de la Révolution**\n' +
-                    await formatTop5(interaction.guild, rankings, 'xp') +
-                    '\n**Héros de la Semaine**\n' +
-                    await formatTop5(interaction.guild, rankings, 'weekly_xp')
-                )
-                .setColor('#CC0000')
-                .setFooter({ text: 'La Gloire du Parti resplendit à travers ses serviteurs !' });
-
-            // Bouton de retour
-            const row = new ActionRowBuilder()
+            const row2 = new ActionRowBuilder()
                 .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('show_points_table')
+                        .setLabel('Tableau des Points')
+                        .setStyle(ButtonStyle.Primary)
+                        .setEmoji('📊'),
                     new ButtonBuilder()
                         .setCustomId('return_dashboard')
                         .setLabel('Retour au QG')
@@ -653,20 +656,263 @@ client.on('interactionCreate', async interaction => {
                         .setEmoji('↩️')
                 );
 
+            const embed = new EmbedBuilder()
+                .setTitle('⚖️ Département de la Justice ⚖️')
+                .setDescription('Sélectionnez une catégorie d\'action à déclarer.')
+                .setColor('#CC0000')
+                .setFooter({ text: 'Le Parti récompense ses fidèles serviteurs !' });
+
+            await interaction.update({
+                embeds: [embed],
+                components: [row1, row2]
+            });
+
+        } catch (error) {
+            console.error('Erreur lors de l\'affichage du menu justice:', error);
+            await interaction.update({
+                content: '❌ Une erreur s\'est produite lors de l\'affichage du menu.',
+                ephemeral: true
+            });
+        }
+    }
+
+    // Sélection de la catégorie d'action
+    else if (interaction.customId === 'select_action_category') {
+        const category = interaction.values[0];
+        
+        try {
+            // Filtrer les actions par catégorie
+            const categoryActions = {
+                moderation: ['WARN', 'MUTE', 'KICK', 'BAN', 'DELETE', 'TIMEOUT'],
+                douane: ['CONTROLE_DOUANE', 'EXPULSION_CENTRE', 'ACCUEIL_SIMPLE', 'ACCUEIL_SUIVI', 'REATTRIBUTION_NUMERO'],
+                animation: ['DEBAT', 'DEBAT_ACTIF', 'SONDAGE', 'CONCOURS', 'EVENT', 'VOCAL'],
+                contenu: ['MEME', 'MEME_VALIDE', 'VIDEO', 'REPOST'],
+                pedagogie: ['FICHE_PRISONNIER', 'COURS', 'APPRENTISSAGE', 'EVOLUTION_NOTE'],
+                progression: ['ETAPE_AUTONOMIE', 'PUBLICATION_SOCIALE'],
+                securite: ['LISTE_SUSPECT', 'PREUVE_SUSPICION', 'ARRET_INTRUS'],
+                journal: ['ARTICLE', 'INTERVIEW']
+            };
+
+            const actions = categoryActions[category];
+            if (!actions) {
+                await interaction.update({
+                    content: '❌ Catégorie invalide.',
+                    ephemeral: true
+                });
+                return;
+            }
+
+            // Créer le menu de sélection d'action pour cette catégorie
+            const actionSelect = new StringSelectMenuBuilder()
+                .setCustomId('select_action_type')
+                .setPlaceholder('Sélectionner une action')
+                .addOptions(
+                    actions.map(action => ({
+                        label: CONFIG.ACTIONS[action].description,
+                        description: `${CONFIG.ACTIONS[action].xp} points de mérite`,
+                        value: action
+                    }))
+                );
+
+            const row1 = new ActionRowBuilder()
+                .addComponents(actionSelect);
+
+            const row2 = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('menu_justice')
+                        .setLabel('Retour aux catégories')
+                        .setStyle(ButtonStyle.Secondary)
+                        .setEmoji('↩️')
+                );
+
+            const embed = new EmbedBuilder()
+                .setTitle('📝 Sélection de l\'Action')
+                .setDescription('Sélectionnez l\'action spécifique à déclarer.')
+                .setColor('#CC0000')
+                .setFooter({ text: 'Le Parti observe vos actions avec attention !' });
+
+            await interaction.update({
+                embeds: [embed],
+                components: [row1, row2]
+            });
+
+        } catch (error) {
+            console.error('Erreur lors de la sélection de la catégorie:', error);
+            await interaction.update({
+                content: '❌ Une erreur s\'est produite lors de la sélection de la catégorie.',
+                ephemeral: true
+            });
+        }
+    }
+
+    // Affichage du tableau des points
+    else if (interaction.customId === 'show_points_table') {
+        try {
+            // Vérifier si c'est un admin
+            const isAdmin = interaction.member.permissions.has(PermissionsBitField.Flags.Administrator);
+
+            // Créer le tableau des points par catégorie
+            const categories = {
+                'Modération': ['WARN', 'MUTE', 'KICK', 'BAN', 'DELETE', 'TIMEOUT'],
+                'Douane et Accueil': ['CONTROLE_DOUANE', 'EXPULSION_CENTRE', 'ACCUEIL_SIMPLE', 'ACCUEIL_SUIVI', 'REATTRIBUTION_NUMERO'],
+                'Animation': ['DEBAT', 'DEBAT_ACTIF', 'SONDAGE', 'CONCOURS', 'EVENT', 'VOCAL'],
+                'Contenu': ['MEME', 'MEME_VALIDE', 'VIDEO', 'REPOST'],
+                'Pédagogie': ['FICHE_PRISONNIER', 'COURS', 'APPRENTISSAGE', 'EVOLUTION_NOTE'],
+                'Progression': ['ETAPE_AUTONOMIE', 'PUBLICATION_SOCIALE'],
+                'Sécurité': ['LISTE_SUSPECT', 'PREUVE_SUSPICION', 'ARRET_INTRUS'],
+                'Journal': ['ARTICLE', 'INTERVIEW']
+            };
+
+            let description = '**🔄 Conversion PMR en XP**\n';
+            description += '1 PMR = 1 XP\n\n';
+
+            for (const [category, actions] of Object.entries(categories)) {
+                description += `\n**${category}**\n`;
+                for (const action of actions) {
+                    const pmr = CONFIG.ACTIONS[action].xp;
+                    const xp = pmr; // 1 PMR = 1 XP
+                    description += `› ${CONFIG.ACTIONS[action].description}: ${pmr} PMR (${xp} XP)\n`;
+                }
+            }
+
+            description += '\n**Points par Message**\n';
+            description += `› Message normal: ${CONFIG.XP_PAR_MESSAGE} PMR (${CONFIG.XP_PAR_MESSAGE} XP)\n`;
+            description += `› Multiplicateur: ${CONFIG.XP_MULTIPLICATEUR}x\n`;
+            description += `› Cooldown: ${CONFIG.COOLDOWN / 1000} secondes\n`;
+
+            const embed = new EmbedBuilder()
+                .setTitle('📊 Tableau des Points de Mérite Révolutionnaire')
+                .setDescription(description)
+                .setColor('#CC0000')
+                .setFooter({ text: isAdmin ? 'Utilisez le bouton ci-dessous pour modifier les points' : 'Le Parti définit la valeur de vos actions !' });
+
+            const row = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('menu_justice')
+                        .setLabel('Retour aux catégories')
+                        .setStyle(ButtonStyle.Secondary)
+                        .setEmoji('↩️')
+                );
+
+            // Ajouter le bouton de modification pour les admins
+            if (isAdmin) {
+                row.addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('modify_points')
+                        .setLabel('Modifier les Points')
+                        .setStyle(ButtonStyle.Primary)
+                        .setEmoji('✏️')
+                );
+            }
+
             await interaction.update({
                 embeds: [embed],
                 components: [row]
             });
+
         } catch (error) {
-            console.error('Erreur lors de l\'affichage des médailles:', error);
-            try {
+            console.error('Erreur lors de l\'affichage du tableau des points:', error);
+            await interaction.update({
+                content: '❌ Une erreur s\'est produite lors de l\'affichage du tableau.',
+                ephemeral: true
+            });
+        }
+    }
+
+    // Modal de modification des points
+    else if (interaction.customId === 'modify_points') {
+        try {
+            if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
                 await interaction.update({
-                    content: '❌ Une erreur s\'est produite dans les archives du Parti.',
+                    content: '❌ Seuls les administrateurs peuvent modifier les points.',
                     ephemeral: true
                 });
-            } catch (replyError) {
-                console.error('Erreur lors de la réponse d\'erreur:', replyError);
+                return;
             }
+
+            const modal = new ModalBuilder()
+                .setCustomId('points_config_modal')
+                .setTitle('Configuration des Points');
+
+            const xpPerMessageInput = new TextInputBuilder()
+                .setCustomId('xp_per_message')
+                .setLabel('Points par message')
+                .setStyle(TextInputStyle.Short)
+                .setValue(CONFIG.XP_PAR_MESSAGE.toString())
+                .setRequired(true);
+
+            const xpMultiplierInput = new TextInputBuilder()
+                .setCustomId('xp_multiplier')
+                .setLabel('Multiplicateur (ex: 1.5)')
+                .setStyle(TextInputStyle.Short)
+                .setValue(CONFIG.XP_MULTIPLICATEUR.toString())
+                .setRequired(true);
+
+            const cooldownInput = new TextInputBuilder()
+                .setCustomId('cooldown')
+                .setLabel('Cooldown en secondes')
+                .setStyle(TextInputStyle.Short)
+                .setValue((CONFIG.COOLDOWN / 1000).toString())
+                .setRequired(true);
+
+            const row1 = new ActionRowBuilder().addComponents(xpPerMessageInput);
+            const row2 = new ActionRowBuilder().addComponents(xpMultiplierInput);
+            const row3 = new ActionRowBuilder().addComponents(cooldownInput);
+
+            modal.addComponents(row1, row2, row3);
+
+            await interaction.showModal(modal);
+
+        } catch (error) {
+            console.error('Erreur lors de l\'affichage du modal de configuration:', error);
+            await interaction.update({
+                content: '❌ Une erreur s\'est produite lors de la modification des points.',
+                ephemeral: true
+            });
+        }
+    }
+
+    // Traitement du modal de configuration des points
+    else if (interaction.customId === 'points_config_modal') {
+        try {
+            if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+                await interaction.reply({
+                    content: '❌ Seuls les administrateurs peuvent modifier les points.',
+                    ephemeral: true
+                });
+                return;
+            }
+
+            const xpPerMessage = parseFloat(interaction.fields.getTextInputValue('xp_per_message'));
+            const xpMultiplier = parseFloat(interaction.fields.getTextInputValue('xp_multiplier'));
+            const cooldown = parseInt(interaction.fields.getTextInputValue('cooldown')) * 1000;
+
+            if (isNaN(xpPerMessage) || isNaN(xpMultiplier) || isNaN(cooldown)) {
+                await interaction.reply({
+                    content: '❌ Les valeurs entrées ne sont pas valides.',
+                    ephemeral: true
+                });
+                return;
+            }
+
+            // Mettre à jour la configuration
+            CONFIG.XP_PAR_MESSAGE = xpPerMessage;
+            CONFIG.XP_MULTIPLICATEUR = xpMultiplier;
+            CONFIG.COOLDOWN = cooldown;
+
+            await interaction.reply({
+                content: '✅ Configuration mise à jour avec succès !',
+                ephemeral: true
+            });
+
+        } catch (error) {
+            console.error('Erreur lors de la mise à jour de la configuration:', error);
+            await interaction.reply({
+                content: '❌ Une erreur s\'est produite lors de la mise à jour.',
+                ephemeral: true
+            });
         }
     }
 
@@ -719,54 +965,39 @@ client.on('interactionCreate', async interaction => {
         const actionType = interaction.values[0];
 
         try {
+            // Vérifier si l'action existe
+            if (!CONFIG.ACTIONS[actionType]) {
+                await interaction.update({
+                    content: '❌ Cette action n\'existe pas dans la configuration.',
+                    ephemeral: true
+                });
+                return;
+            }
+
             // Créer un menu pour sélectionner l'utilisateur
+            const userSelect = new UserSelectMenuBuilder()
+                .setCustomId(`select_user_${actionType}`)
+                .setPlaceholder('Sélectionner un utilisateur');
+
+            const row = new ActionRowBuilder()
+                .addComponents(userSelect);
+
             const embed = new EmbedBuilder()
                 .setTitle('👤 Sélection de l\'Utilisateur')
-                .setDescription('Mentionnez l\'utilisateur concerné par cette action.')
+                .setDescription('Sélectionnez l\'utilisateur concerné par cette action.')
                 .setColor('#CC0000')
                 .setFooter({ text: 'Le Parti demande des comptes !' });
 
-            const row = new ActionRowBuilder()
-                .addComponents(
-                    new ButtonBuilder()
-                        .setCustomId(`select_user_${actionType}`)
-                        .setLabel('Sélectionner un Utilisateur')
-                        .setStyle(ButtonStyle.Primary)
-                        .setEmoji('👤'),
-                    new ButtonBuilder()
-                        .setCustomId('menu_justice')
-                        .setLabel('Annuler')
-                        .setStyle(ButtonStyle.Secondary)
-                        .setEmoji('↩️')
-                );
-
-            try {
-                await interaction.update({
-                    embeds: [embed],
-                    components: [row]
-                });
-            } catch (error) {
-                // Si l'interaction a expiré, on crée une nouvelle réponse
-                if (error.code === 10062) {
-                    await interaction.reply({
-                        embeds: [embed],
-                        components: [row],
-                        ephemeral: true
-                    });
-                } else {
-                    throw error;
-                }
-            }
+            await interaction.update({
+                embeds: [embed],
+                components: [row]
+            });
         } catch (error) {
             console.error('Erreur lors de la sélection de l\'utilisateur:', error);
-            try {
-                await interaction.update({
-                    content: '❌ Une erreur s\'est produite. Veuillez réessayer.',
-                    ephemeral: true
-                });
-            } catch (replyError) {
-                console.error('Erreur lors de la réponse d\'erreur:', replyError);
-            }
+            await interaction.update({
+                content: '❌ Une erreur s\'est produite lors de la sélection de l\'utilisateur.',
+                ephemeral: true
+            });
         }
     }
 
@@ -969,7 +1200,10 @@ client.on('interactionCreate', async interaction => {
                 const rows = await new Promise((resolve, reject) => {
                     db.all('SELECT user_id FROM report_recipients WHERE guild_id = ?', 
                         [interaction.guildId], 
-                        (err, rows) => err ? reject(err) : resolve(rows)
+                        (err, rows) => {
+                            if (err) reject(err);
+                            else resolve(rows);
+                        }
                     );
                 });
 
@@ -1045,7 +1279,7 @@ client.on('interactionCreate', async interaction => {
     else if (interaction.customId === 'return_dashboard') {
         try {
             const mainEmbed = new EmbedBuilder()
-                .setTitle('⭐ Quartier Général du Parti ⭐')
+                .setTitle('☭ Quartier Général du Parti ☭')
                 .setDescription(
                     '**Camarade Commissaire, bienvenue au QG !**\n\n' +
                     'Choisissez votre département :\n\n' +
@@ -1069,7 +1303,7 @@ client.on('interactionCreate', async interaction => {
                     new ButtonBuilder()
                         .setCustomId('menu_medals')
                         .setLabel('Ordre du Drapeau Rouge')
-                        .setStyle(ButtonStyle.Primary)
+                        .setStyle(ButtonStyle.Danger)
                         .setEmoji('🎖️'),
                     new ButtonBuilder()
                         .setCustomId('menu_config')
@@ -1105,7 +1339,7 @@ client.on('interactionCreate', async interaction => {
                             .setCustomId('config_mod_role')
                             .setLabel('Garde Rouge')
                             .setStyle(ButtonStyle.Danger)
-                            .setEmoji('👮'),
+                            .setEmoji('☭'),
                         new ButtonBuilder()
                             .setCustomId('config_leaderboard')
                             .setLabel('Canal de Propagande')
@@ -1141,7 +1375,7 @@ client.on('interactionCreate', async interaction => {
                     .setTitle('⚙️ Directives du Parti ⚙️')
                     .setDescription(
                         'Configuration actuelle :\n\n' +
-                        `👮 **Garde Rouge** - ${currentModRole}\n` +
+                        `☭ **Garde Rouge** - ${currentModRole}\n` +
                         `📢 **Canal de Propagande** - ${currentChannel}\n` +
                         `🚩 **Canal d'Accueil** - ${welcomeChannel}\n` +
                         '📨 **Message d\'Accueil** - Message de bienvenue révolutionnaire'
@@ -1381,8 +1615,7 @@ client.on('interactionCreate', async interaction => {
                 .setLabel('Titre du message')
                 .setStyle(TextInputStyle.Short)
                 .setPlaceholder('Bienvenue Camarade ✋')
-                .setRequired(true)
-                .setMaxLength(100);
+                .setRequired(true);
 
             const messageInput = new TextInputBuilder()
                 .setCustomId('welcome_content')
@@ -1468,10 +1701,11 @@ client.on('interactionCreate', async interaction => {
                     .setColor('#CC0000')
                     .setFooter({ text: 'Utilisez le bouton "Tester" pour voir le résultat final' });
 
-                await interaction.update({ 
-                    embeds: [embed], 
+                await interaction.update({
+                    embeds: [embed],
                     components: [row]
                 });
+
             });
         } catch (error) {
             console.error('Erreur lors du traitement du modal:', error);
@@ -1576,9 +1810,9 @@ client.on('interactionCreate', async interaction => {
             [interaction.guildId],
             async (err, row) => {
                 if (err || !row) {
-                    await interaction.update({ 
-                        content: '❌ Aucune configuration trouvée !', 
-                        ephemeral: true 
+                    await interaction.update({
+                        content: '❌ Aucune configuration trouvée !',
+                        ephemeral: true
                     });
                     return;
                 }
@@ -1887,7 +2121,7 @@ client.on('interactionCreate', async interaction => {
             );
 
         const embed = new EmbedBuilder()
-            .setTitle('☭ Tableau d\'Honneur du Parti ☭')
+            .setTitle('🛠️ Tableau d\'Honneur du Parti 🛠️')
             .setDescription('Sélectionnez le canal où envoyer le tableau d\'honneur')
             .setColor('#CC0000')
             .setFooter({ text: 'La gloire du Parti doit être proclamée !' });
@@ -2292,16 +2526,7 @@ client.on('interactionCreate', async interaction => {
                         .setLabel('Configurer les Destinataires')
                         .setStyle(ButtonStyle.Primary)
                         .setEmoji('📬'),
-                    new ButtonBuilder()
-                        .setCustomId('select_mod_role')
-                        .setLabel('Rôle Modérateur')
-                        .setStyle(ButtonStyle.Secondary)
-                        .setEmoji('👮'),
-                    new ButtonBuilder()
-                        .setCustomId('welcome_config')
-                        .setLabel('Message de Bienvenue')
-                        .setStyle(ButtonStyle.Secondary)
-                        .setEmoji('👋'),
+        
                     new ButtonBuilder()
                         .setCustomId('return_dashboard')
                         .setLabel('Retour au Tableau de Bord')
