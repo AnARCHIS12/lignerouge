@@ -1004,7 +1004,7 @@ client.on('interactionCreate', async interaction => {
     // Sélection de l'utilisateur
     else if (interaction.customId.startsWith('select_user_')) {
         try {
-            const actionType = interaction.customId.split('_')[2];
+            const actionType = interaction.customId.replace('select_user_', '');
 
             // Créer le modal pour les détails
             const modal = new ModalBuilder()
@@ -1058,7 +1058,7 @@ client.on('interactionCreate', async interaction => {
     // Traitement du rapport d'action
     else if (interaction.isModalSubmit() && interaction.customId.startsWith('action_details_')) {
         try {
-            const actionType = interaction.customId.split('_')[2];
+            const actionType = interaction.customId.replace('action_details_', '');
             const xpGained = CONFIG.ACTIONS[actionType].xp;
             const weekNumber = getWeekNumber();
 
@@ -1817,14 +1817,14 @@ client.on('interactionCreate', async interaction => {
                     return;
                 }
 
-                const title = (row.welcome_title?.replace('{user}', interaction.user)
+                const title = (row.welcome_title?.replace('{user}', interaction.user.username)
                     .replace('{server}', interaction.guild.name)
-                    .replace('{memberCount}', interaction.guild.memberCount) || 'Bienvenue Camarade ✋');
+                    .replace('{memberCount}', interaction.guild.memberCount) || `☭ Bienvenue au Parti, Camarade ${interaction.user.username} ! ☭`);
 
-                const content = (row.welcome_content?.replace('{user}', interaction.user)
+                const content = (row.welcome_content?.replace('{user}', `<@${interaction.user.id}>`)
                     .replace('{server}', interaction.guild.name)
                     .replace('{memberCount}', interaction.guild.memberCount) ||
-                    `Un nouveau camarade ${interaction.user} rejoint notre révolution !`);
+                    `Le Parti accueille chaleureusement <@${interaction.user.id}> dans nos rangs !\nTu es notre ${interaction.guild.memberCount}ème camarade.`);
 
                 const embed = new EmbedBuilder()
                     .setTitle(title)
@@ -2715,12 +2715,12 @@ client.on('guildMemberAdd', async member => {
         // Préparer le titre et le contenu
         const title = (configRow?.welcome_title?.replace('{user}', member.user.username)
             .replace('{server}', member.guild.name)
-            .replace('{memberCount}', memberCount) || `☭ Bienvenue au Parti, Camarade {user} ! ☭`);
+            .replace('{memberCount}', memberCount) || `☭ Bienvenue au Parti, Camarade ${member.user.username} ! ☭`);
 
         const content = (configRow?.welcome_content?.replace('{user}', `<@${member.id}>`)
             .replace('{server}', member.guild.name)
             .replace('{memberCount}', memberCount) ||
-            `Le Parti accueille chaleureusement {user} dans nos rangs !\nTu es notre {memberCount}ème camarade.`);
+            `Le Parti accueille chaleureusement <@${member.id}> dans nos rangs !\nTu es notre ${memberCount}ème camarade.`);
 
         // Créer l'embed
         const welcomeEmbed = new EmbedBuilder()
