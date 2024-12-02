@@ -1,1 +1,19 @@
 #example
+
+# Dependencies
+node_modules/
+
+# Environment variables
+.env
+
+# Database files
+*.db
+config.db
+bot.db
+
+# Logs
+*.log
+
+# IDE specific files
+.vscode/
+.idea/
